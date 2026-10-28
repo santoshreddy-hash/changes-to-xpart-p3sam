@@ -81,14 +81,26 @@ cd P3-SAM/demo
 python run_p3sam_for_xpart.py
 # -> writes XPart/results/precomputed_aabb_000.npy
 
-# 2. Run X-Part using that precomputed bbox
+# 2a. generated_parts_assembled_50step.glb -- full quality, 50 steps,
+#     default chunk size (6)
 cd ../../XPart
 python demo.py --config partgen/config/infer.yaml \
     --mesh_path ./data/000.glb --save_dir ./results/ \
-    --aabb_path ./results/precomputed_aabb_000.npy
-# num_inference_steps is set inside demo.py (20 for the chunked-smoketest
-# result, 50 for the full-quality result)
+    --aabb_path ./results/precomputed_aabb_000.npy \
+    --num_inference_steps 50
+
+# 2b. generated_parts_assembled_chunked20step.glb -- fast smoke test that
+#     validated the chunking fix, 20 steps, chunk size 4
+XPART_DIFFUSION_PART_CHUNK=4 python demo.py --config partgen/config/infer.yaml \
+    --mesh_path ./data/000.glb --save_dir ./results_smoketest/ \
+    --aabb_path ./results/precomputed_aabb_000.npy \
+    --num_inference_steps 20
 ```
+
+Both runs used the same `data/000.glb` input mesh and the same precomputed
+`aabb` from step 1 -- they differ only in step count and chunk size, both now
+exposed as CLI flags (`--num_inference_steps`, `XPART_DIFFUSION_PART_CHUNK`
+env var) instead of being hardcoded.
 
 Requires the pretrained weights, auto-downloaded from HuggingFace
 (`tencent/Hunyuan3D-Part`) on first run. See each subproject's own

@@ -23,7 +23,7 @@ import numpy as np
 import torch
 
 
-def main(ckpt_path, config, mesh_path, save_dir, ignore_keys=(), aabb_path=None):
+def main(ckpt_path, config, mesh_path, save_dir, ignore_keys=(), aabb_path=None, num_inference_steps=50):
     # Set random seed
     pl.seed_everything(2026, workers=True)
     # pipeline = PartFormerPipeline.from_single_file(
@@ -68,13 +68,14 @@ def main(ckpt_path, config, mesh_path, save_dir, ignore_keys=(), aabb_path=None)
             mesh_path=mesh_path,
             aabb=aabb,
             octree_resolution=512,
-            num_inference_steps=50,
+            num_inference_steps=num_inference_steps,
             **additional_params,
         )
     else:
         obj_mesh, (out_bbox, mesh_gt_bbox, explode_object) = pipeline(
             mesh_path=mesh_path,
             octree_resolution=512,
+            num_inference_steps=num_inference_steps,
             **additional_params,
         )
     obj_mesh.export(save_dir / f"train_cfg_{cfg:04f}_dit_boxgpt_{uid}.glb")
@@ -107,6 +108,14 @@ if __name__ == "__main__":
         help="Path to a precomputed aabb .npy (from a standalone P3-SAM run), "
              "skips X-Part's own internal bbox predictor.",
     )
+    parser.add_argument(
+        "--num_inference_steps",
+        type=int,
+        default=50,
+        help="Diffusion sampling steps. Use 20 to reproduce "
+             "generated_parts_assembled_chunked20step.glb, 50 (default) to "
+             "reproduce generated_parts_assembled_50step.glb.",
+    )
     args = parser.parse_args()
     config = get_config_from_file(
         args.config
@@ -134,4 +143,5 @@ if __name__ == "__main__":
         save_dir=save_dir,
         ignore_keys=ignore_keys,
         aabb_path=args.aabb_path,
+        num_inference_steps=args.num_inference_steps,
     )
