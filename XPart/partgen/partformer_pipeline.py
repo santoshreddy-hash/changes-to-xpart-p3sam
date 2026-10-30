@@ -29,24 +29,24 @@ from diffusers.utils.torch_utils import randn_tensor
 from pathlib import Path
 
 
+def _process_single_mesh(mesh):
+    if mesh is None:
+        return None
+    try:
+        f = mesh.mesh_f[:, ::-1]
+        mesh_out = trimesh.Trimesh(mesh.mesh_v, f)
+        return fix_mesh(mesh_out)
+    except Exception as e:
+        logger.error(f"Failed to fix mesh: {e}")
+        return None
+
+
 @synchronize_timer("Export to trimesh")
 def export_to_trimesh(mesh_output):
     if isinstance(mesh_output, list):
-        outputs = []
-        for mesh in mesh_output:
-            if mesh is None:
-                outputs.append(None)
-            else:
-                mesh.mesh_f = mesh.mesh_f[:, ::-1]
-                mesh_output = trimesh.Trimesh(mesh.mesh_v, mesh.mesh_f)
-                mesh_output = fix_mesh(mesh_output)
-                outputs.append(mesh_output)
-        return outputs
+        return [_process_single_mesh(m) for m in mesh_output]
     else:
-        mesh_output.mesh_f = mesh_output.mesh_f[:, ::-1]
-        mesh_output = trimesh.Trimesh(mesh_output.mesh_v, mesh_output.mesh_f)
-        mesh_output = fix_mesh(mesh_output)
-        return mesh_output
+        return _process_single_mesh(mesh_output)
 
 
 def retrieve_timesteps(
@@ -513,7 +513,7 @@ class PartFormerPipeline(TokenAllocMixin):
         mc_level=0.0,
         num_chunks=20000,
         octree_resolution=256,
-        mc_algo="mc",
+        mc_algo="dmc",
         enable_pbar=True,
         **kwargs,
     ):
@@ -565,7 +565,7 @@ class PartFormerPipeline(TokenAllocMixin):
         octree_resolution=512,
         mc_level=-1 / 512,
         num_chunks=400000,
-        mc_algo="mc",
+        mc_algo="dmc",
         output_type: Optional[str] = "trimesh",
         enable_pbar=True,
         **kwargs,
@@ -681,7 +681,7 @@ class PartFormerPipeline(TokenAllocMixin):
                 # of part count. aabb/num_tokens carry parts in dim 1 (a [1,
                 # K, ...] wrapper), unlike x/cond/timestep which carry parts
                 # directly in dim 0 -- both conventions are sliced here.
-                part_chunk_size = int(os.environ.get("XPART_DIFFUSION_PART_CHUNK", "6"))
+                part_chunk_size = int(os.environ.get("XPART_DIFFUSION_PART_CHUNK", "16"))
                 B = latent_model_input.shape[0]
                 if B <= part_chunk_size:
                     noise_pred = self.model(
@@ -725,25 +725,38 @@ class PartFormerPipeline(TokenAllocMixin):
                     callback(step_idx, t, outputs)
 
         # latents2mesh
-        # part_latents = torch.split(latents, num_tokens[0].tolist(), dim=1)
         out = trimesh.Scene()
-        for i, part_latent in enumerate(latents):
+        latents_scaled = (1.0 / self.vae.scale_factor) * latents
+        vae_features = self.vae(latents_scaled)
+
+        raw_meshes = []
+        for i in range(len(latents)):
             try:
-                part_mesh = self._export(
-                    latents=part_latent.unsqueeze(0),
-                    output_type=output_type,
-                    box_v=box_v,
+                mesh_outs = self.vae.latent2mesh_2(
+                    vae_features[i : i + 1],
+                    bounds=box_v,
                     mc_level=mc_level,
+                    octree_depth=8,
                     num_chunks=num_chunks,
                     octree_resolution=octree_resolution,
-                    mc_algo=mc_algo,
-                    enable_pbar=enable_pbar,
-                )[0]
-                out.add_geometry(part_mesh)
-                random_color = np.random.randint(0, 255, size=3)
-                part_mesh.visual.face_colors = random_color
+                    mc_mode=mc_algo,
+                    **kwargs,
+                )
+                raw_meshes.append(mesh_outs[0] if len(mesh_outs) > 0 else None)
             except Exception as e:
                 logger.error(f"Failed to export part {i} with error {e}")
+                raw_meshes.append(None)
+
+        if output_type == "trimesh":
+            part_meshes = export_to_trimesh(raw_meshes)
+        else:
+            part_meshes = raw_meshes
+
+        for i, part_mesh in enumerate(part_meshes):
+            if part_mesh is not None:
+                random_color = np.random.randint(0, 255, size=3)
+                part_mesh.visual.face_colors = random_color
+                out.add_geometry(part_mesh)
         print(f"Denormalize mesh: {center}, {scale}")
         for key in out.geometry.keys():
             _v = out.geometry[key].vertices

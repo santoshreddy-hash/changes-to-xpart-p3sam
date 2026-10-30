@@ -23,8 +23,9 @@ from numba import njit
 # 修改sonata import路径
 from ..models import sonata
 
-#################################
-sys.path.append("../P3-SAM")
+p3sam_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "P3-SAM"))
+if p3sam_dir not in sys.path:
+    sys.path.insert(0, p3sam_dir)
 from model import build_P3SAM, load_state_dict
 
 #################################

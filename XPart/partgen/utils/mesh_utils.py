@@ -539,6 +539,9 @@ def extract_geometry_fast(
 
     if isinstance(bounds, float):
         bounds = [-bounds, -bounds, -bounds, bounds, bounds, bounds]
+    if mc_mode == "dmc" and diffdmc is None:
+        from diso import DiffDMC
+        diffdmc = DiffDMC(dtype=torch.float32).to(device)
     if octree_resolution is None:
         octree_resolution = 2**octree_depth
 
@@ -682,15 +685,17 @@ def extract_geometry_fast(
                 vertices = vertices / (grid_size - 1) * bbox_size + bbox_min
                 # vertices[:, [0, 1]] = vertices[:, [1, 0]]
             elif mc_mode == "dmc":
-                torch.cuda.empty_cache()
-                grid_logits = -grid_logits[i]
-                grid_logits = grid_logits.to(torch.float32).contiguous()
+                part_logits = -grid_logits[i].to(torch.float32).contiguous()
                 verts, faces = diffdmc(
-                    grid_logits, deform=None, return_quads=False, normalize=False
+                    part_logits, deform=None, return_quads=False, normalize=False
                 )
-                verts = verts * torch.tensor(resolution, device=device) + torch.tensor(
-                    bbox_min, device=device
-                )
+                if len(verts) == 0:
+                    mesh_v_f.append((None, None))
+                    has_surface[i] = False
+                    continue
+                res_t = torch.tensor(resolution, device=device, dtype=verts.dtype)
+                bmin_t = torch.tensor(bbox_min, device=device, dtype=verts.dtype)
+                verts = verts * res_t + bmin_t
                 vertices = verts.detach().cpu().numpy()
                 faces = faces.detach().cpu().numpy()[:, ::-1]
             elif mc_mode == "odc":

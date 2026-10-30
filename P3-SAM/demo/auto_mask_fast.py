@@ -1,5 +1,9 @@
 import os
 import sys
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 import torch
 import torch.nn as nn
 import numpy as np
@@ -24,7 +28,10 @@ from numba import njit
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 
-sys.path.append('..')
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.abspath(os.path.join(script_dir, '..'))
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 from model import build_P3SAM, load_state_dict
 
 class P3SAM(nn.Module):
@@ -537,7 +544,7 @@ def fix_label(face_ids, adjacent_faces, use_aabb=False, mesh=None, show_info=Fal
     return face_ids
 
 
-def save_mesh(save_path, mesh, face_ids, color_map):
+def save_mesh(save_path, mesh, face_ids, color_map, save_ply=True, save_npy=True):
     face_colors = np.zeros((len(mesh.faces), 3), dtype=np.uint8)
     for i in tqdm(range(len(mesh.faces)), disable=True):
         _max_id = face_ids[i]
@@ -548,7 +555,8 @@ def save_mesh(save_path, mesh, face_ids, color_map):
     mesh_save = trimesh.Trimesh(vertices=mesh.vertices, faces=mesh.faces)
     mesh_save.visual.face_colors = face_colors
     mesh_save.export(save_path)
-    mesh_save.export(save_path.replace(".glb", ".ply"))
+    if save_ply:
+        mesh_save.export(save_path.replace(".glb", ".ply"))
     # print('保存mesh完成')
 
     scene_mesh = trimesh.Scene()
@@ -576,9 +584,10 @@ def save_mesh(save_path, mesh, face_ids, color_map):
         max_xyz = np.max(_points, axis=0)
         aabb.append([min_xyz, max_xyz])
     scene_mesh.export(save_path.replace(".glb", "_aabb.glb"))
-    aabb = np.array(aabb)
-    np.save(save_path.replace(".glb", "_aabb.npy"), aabb)
-    np.save(save_path.replace(".glb", "_face_ids.npy"), face_ids)
+    if save_npy:
+        aabb = np.array(aabb)
+        np.save(save_path.replace(".glb", "_aabb.npy"), aabb)
+        np.save(save_path.replace(".glb", "_face_ids.npy"), face_ids)
 
 
 def get_aabb_from_face_ids(mesh, face_ids):
@@ -919,7 +928,7 @@ def mesh_sam(
     threshold=0.95,
     clean_mesh_flag=True,
     seed=42,
-    prompt_bs=32,
+    prompt_bs=8,
     loop_mode="opt3",   # one of: baseline, opt2, opt3
     nms_mode="fast",    # one of: baseline, fast
     cleanup_mode="fast",  # one of: baseline, fast
@@ -1421,7 +1430,7 @@ def mesh_sam(
                 face_ids_4[j] = _parts_id
 
     final_face_ids = face_ids_4
-    if save_mid_res:
+    if save_mid_res and save_path is not None:
         save_mesh(
             os.path.join(save_path, "auto_mask_mesh_final.glb"),
             mesh,
@@ -1433,14 +1442,25 @@ def mesh_sam(
         parts = GCR(final_face_ids, adjacent_faces)
         final_face_ids = do_no_mask_process(parts, final_face_ids)
         face_ids_5 = do_post_process(face_areas, parts, adjacent_faces, face_ids_4, threshold, show_info=show_info)
-        if save_mid_res:    
+        if save_path is not None:    
             save_mesh(
                 os.path.join(save_path, "auto_mask_mesh_final_post.glb"),
                 mesh,
                 face_ids_5,
                 color_map_2,
+                save_ply=save_mid_res,
+                save_npy=save_mid_res,
             )
         final_face_ids = face_ids_5
+    elif save_path is not None and not save_mid_res:
+        save_mesh(
+            os.path.join(save_path, "auto_mask_mesh_final.glb"),
+            mesh,
+            face_ids_4,
+            color_map_2,
+            save_ply=False,
+            save_npy=save_mid_res,
+        )
     with Timer("计算最后的aabb"):
         aabb = get_aabb_from_face_ids(mesh, final_face_ids)
     return aabb, final_face_ids, mesh
@@ -1534,13 +1554,17 @@ if __name__ == '__main__':
     argparser.add_argument('--show_time_info', type=int, default=1, help='是否显示时间信息')
     argparser.add_argument('--seed', type=int, default=42, help='随机种子')
     argparser.add_argument('--parallel', type=int, default=1, help='是否使用多卡')
-    argparser.add_argument('--prompt_bs', type=int, default=32, help='提示点推理时的batch size大小')
+    argparser.add_argument('--prompt_bs', type=int, default=8, help='提示点推理时的batch size大小 (8 recommended for 24GB GPUs to avoid PCIe sysmem thrashing)')
     argparser.add_argument('--clean_mesh', type=int, default=1, help='是否清洗网格')
     argparser.add_argument('--loop_mode', type=str, default='opt3', choices=['baseline', 'opt2', 'opt3'], help='推理循环优化模式')
     argparser.add_argument('--nms_mode', type=str, default='fast', choices=['baseline', 'fast'], help='NMS优化模式')
     argparser.add_argument('--cleanup_mode', type=str, default='fast', choices=['baseline', 'fast'], help='mesh清理优化模式')
     argparser.add_argument('--save_face_ids', type=str, default=None, help='保存face_ids到指定npy路径,用于正确性比对')
+    argparser.add_argument('--bf16', type=int, default=1, help='是否使用bf16加速推理')
+    argparser.add_argument('--save_only_glbs', type=int, default=0, help='是否只保存最终结果glb文件并忽略中间产物')
     args = argparser.parse_args()
+    if args.save_only_glbs:
+        args.save_mid_res = 0
     Timer.STATE = args.show_time_info
 
 
@@ -1549,6 +1573,7 @@ if __name__ == '__main__':
     ckpt_path = args.ckpt_path
     auto_mask = AutoMask(ckpt_path)
     mesh_path = args.mesh_path
+    autocast_ctx = torch.autocast("cuda", dtype=torch.bfloat16) if args.bf16 else torch.autocast("cuda", enabled=False)
     if os.path.isdir(mesh_path):
         for file in os.listdir(mesh_path):
             if not (file.endswith('.glb') or file.endswith('.obj') or file.endswith('.ply')):
@@ -1558,8 +1583,28 @@ if __name__ == '__main__':
             os.makedirs(_output_path, exist_ok=True)
             mesh = trimesh.load(_mesh_path, force='mesh')
             set_seed(args.seed)
+            with autocast_ctx:
+                aabb, face_ids, mesh = auto_mask.predict_aabb(mesh, 
+                                                            save_path=_output_path, 
+                                                            point_num=args.point_num, 
+                                                            prompt_num=args.prompt_num, 
+                                                            threshold=args.threshold, 
+                                                            post_process=args.post_process, 
+                                                            save_mid_res=args.save_mid_res, 
+                                                            show_info=args.show_info,
+                                                            seed=args.seed,
+                                                            is_parallel=args.parallel,
+                                                            clean_mesh_flag=args.clean_mesh,
+                                                            prompt_bs=args.prompt_bs,
+                                                            loop_mode=args.loop_mode,
+                                                            nms_mode=args.nms_mode,
+                                                            cleanup_mode=args.cleanup_mode,)
+    else:     
+        mesh = trimesh.load(mesh_path, force='mesh')
+        set_seed(args.seed)
+        with autocast_ctx:
             aabb, face_ids, mesh = auto_mask.predict_aabb(mesh, 
-                                                        save_path=_output_path, 
+                                                        save_path=output_path, 
                                                         point_num=args.point_num, 
                                                         prompt_num=args.prompt_num, 
                                                         threshold=args.threshold, 
@@ -1573,24 +1618,8 @@ if __name__ == '__main__':
                                                         loop_mode=args.loop_mode,
                                                         nms_mode=args.nms_mode,
                                                         cleanup_mode=args.cleanup_mode,)
-    else:     
-        mesh = trimesh.load(mesh_path, force='mesh')
-        set_seed(args.seed)
-        aabb, face_ids, mesh = auto_mask.predict_aabb(mesh, 
-                                                    save_path=output_path, 
-                                                    point_num=args.point_num, 
-                                                    prompt_num=args.prompt_num, 
-                                                    threshold=args.threshold, 
-                                                    post_process=args.post_process, 
-                                                    save_mid_res=args.save_mid_res, 
-                                                    show_info=args.show_info,
-                                                    seed=args.seed,
-                                                    is_parallel=args.parallel,
-                                                    clean_mesh_flag=args.clean_mesh,
-                                                    prompt_bs=args.prompt_bs,
-                                                    loop_mode=args.loop_mode,
-                                                    nms_mode=args.nms_mode,
-                                                    cleanup_mode=args.cleanup_mode,)
+        valid_parts = len(np.unique(face_ids[face_ids >= 0])) if np.any(face_ids >= 0) else len(np.unique(face_ids))
+        print(f"Segmentation complete! Found {valid_parts} parts, aabb shape: {aabb.shape}")
         if args.save_face_ids:
             np.save(args.save_face_ids, face_ids)
             print(f"saved face_ids to {args.save_face_ids}, unique parts: {len(np.unique(face_ids))}")

@@ -13,17 +13,29 @@
 # limitations under the License.
 
 import os
+import sys
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.resolve()))
 from partgen.partformer_pipeline import PartFormerPipeline
 
 import pytorch_lightning as pl
 from partgen.utils.misc import get_config_from_file
-import argparse
+import argparse 
 import numpy as np
 import torch
 
 
-def main(ckpt_path, config, mesh_path, save_dir, ignore_keys=(), aabb_path=None, num_inference_steps=50):
+def main(ckpt_path, config, mesh_path, save_dir, ignore_keys=(), aabb_path=None, num_inference_steps=50, octree_resolution=512, mc_algo="dmc"):
+    import time
+    start_total = time.perf_counter()
+    # Enable TF32 and cuDNN benchmark for faster lossless GPU execution
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
     # Set random seed
     pl.seed_everything(2026, workers=True)
     # pipeline = PartFormerPipeline.from_single_file(
@@ -63,25 +75,36 @@ def main(ckpt_path, config, mesh_path, save_dir, ignore_keys=(), aabb_path=None,
             pipeline.bbox_predictor.model.cpu()
             pipeline.bbox_predictor.model_parallel.cpu()
             pipeline.bbox_predictor = None
-            torch.cuda.empty_cache()
+        pipeline_start = time.perf_counter()
         obj_mesh, (out_bbox, mesh_gt_bbox, explode_object) = pipeline(
             mesh_path=mesh_path,
             aabb=aabb,
-            octree_resolution=512,
+            octree_resolution=octree_resolution,
             num_inference_steps=num_inference_steps,
+            mc_algo=mc_algo,
             **additional_params,
         )
+        pipeline_time = time.perf_counter() - pipeline_start
     else:
+        pipeline_start = time.perf_counter()
         obj_mesh, (out_bbox, mesh_gt_bbox, explode_object) = pipeline(
             mesh_path=mesh_path,
-            octree_resolution=512,
+            octree_resolution=octree_resolution,
             num_inference_steps=num_inference_steps,
+            mc_algo=mc_algo,
             **additional_params,
         )
+        pipeline_time = time.perf_counter() - pipeline_start
     obj_mesh.export(save_dir / f"train_cfg_{cfg:04f}_dit_boxgpt_{uid}.glb")
     out_bbox.export(save_dir / f"train_cfg_{cfg:04f}_dit_boxgpt_{uid}_bbox.glb")
     mesh_gt_bbox.export(save_dir / f"train_cfg_{cfg:04f}_input_boxgpt_{uid}.glb")
     explode_object.export(save_dir / f"train_cfg_{cfg:04f}_explode_boxgpt_{uid}.glb")
+    print(f"Successfully exported all meshes to {save_dir}")
+    total_time = time.perf_counter() - start_total
+    print(f"\n================ TIMING REPORT ================")
+    print(f"  Pipeline Inference & Reconstruction: {pipeline_time:.2f} s")
+    print(f"  Total Run Time (incl. model loading): {total_time:.2f} s")
+    print(f"================================================\n")
 
 
 if __name__ == "__main__":
@@ -116,6 +139,19 @@ if __name__ == "__main__":
              "generated_parts_assembled_chunked20step.glb, 50 (default) to "
              "reproduce generated_parts_assembled_50step.glb.",
     )
+    parser.add_argument(
+        "--octree_resolution",
+        type=int,
+        default=512,
+        help="Marching cubes grid resolution (512 default, 256 or 384 for 3-4x faster extraction).",
+    )
+    parser.add_argument(
+        "--mc_algo",
+        type=str,
+        default="dmc",
+        choices=["mc", "dmc"],
+        help="Marching cubes algorithm: 'dmc' for GPU-accelerated DiffDMC (~70x faster), 'mc' for scikit-image on CPU.",
+    )
     args = parser.parse_args()
     config = get_config_from_file(
         args.config
@@ -144,4 +180,6 @@ if __name__ == "__main__":
         ignore_keys=ignore_keys,
         aabb_path=args.aabb_path,
         num_inference_steps=args.num_inference_steps,
+        octree_resolution=args.octree_resolution,
+        mc_algo=args.mc_algo,
     )

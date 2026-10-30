@@ -10,6 +10,29 @@ from einops import rearrange
 from .moe_layers import MoEBlock
 import numpy as np
 
+if not hasattr(nn, "RMSNorm"):
+    class RMSNorm(nn.Module):
+        def __init__(self, normalized_shape, eps=1e-6, elementwise_affine=True):
+            super().__init__()
+            if isinstance(normalized_shape, int):
+                normalized_shape = (normalized_shape,)
+            self.normalized_shape = tuple(normalized_shape)
+            self.eps = eps
+            self.elementwise_affine = elementwise_affine
+            if elementwise_affine:
+                self.weight = nn.Parameter(torch.ones(normalized_shape))
+            else:
+                self.register_parameter("weight", None)
+
+        def forward(self, x):
+            variance = x.pow(2).mean(-1, keepdim=True)
+            x = x * torch.rsqrt(variance + self.eps)
+            if self.weight is not None:
+                x = x * self.weight
+            return x
+
+    nn.RMSNorm = RMSNorm
+
 
 def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     """

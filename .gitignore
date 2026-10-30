@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.DS_Store
+*.glb
+*.obj
+*.ply
+outputs/
+tripo_analysis/*.glb
+tripo_analysis/*.png
+tripo_analysis/scripts/
+tripo_analysis/page.html
+tripo_project_detail.json
+rea/

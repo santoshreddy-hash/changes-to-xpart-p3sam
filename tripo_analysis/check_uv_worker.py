@@ -1,0 +1,6 @@
+txt = open('tripo_analysis/scripts/uv-atlas-worker-qW6VOAtt.js', 'r', encoding='utf-8', errors='ignore').read()
+print("UV atlas worker length:", len(txt))
+print("First 500 chars:")
+print(txt[:500])
+print("\nLast 1000 chars:")
+print(txt[-1000:])
