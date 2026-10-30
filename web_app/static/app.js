@@ -283,6 +283,11 @@ function initExplosionData(model) {
     }
 
     if (child.isMesh && child.geometry) {
+      // Ensure normals exist so lighting calculations never result in black silhouettes
+      if (!child.geometry.attributes.normal) {
+        child.geometry.computeVertexNormals();
+      }
+
       meshes.push(child);
 
       // Safe material processing
@@ -314,7 +319,9 @@ function initExplosionData(model) {
       clayMaterials.set(child, new THREE.MeshStandardMaterial({
         color: 0xd4d4d8,
         roughness: 0.45,
-        metalness: 0.1,
+        metalness: 0.05,
+        emissive: 0x222225,
+        emissiveIntensity: 0.1,
         side: THREE.DoubleSide
       }));
     }
@@ -334,8 +341,34 @@ function initExplosionData(model) {
   partsData.clear();
   const partsContainer = document.getElementById('parts-container');
   partsContainer.innerHTML = '';
-  document.getElementById('part-count').innerText = `${meshes.length} PARTS`;
+  const partCountEl = document.getElementById('part-count');
+  if (partCountEl) partCountEl.innerText = `${meshes.length} PARTS`;
+  const badgeCountEl = document.getElementById('parts-badge-count');
+  if (badgeCountEl) badgeCountEl.innerText = meshes.length;
   document.getElementById('stat-parts-count').innerText = meshes.length > 1 ? `${meshes.length} Disjoint Parts` : '1 Single Object';
+
+  // Populate Quick Part Picker Dropdown
+  const quickSelect = document.getElementById('quick-part-select');
+  if (quickSelect) {
+    quickSelect.innerHTML = '<option value="">-- Choose Part to Inspect & Edit --</option>';
+    meshes.forEach((m, i) => {
+      const opt = document.createElement('option');
+      opt.value = i;
+      opt.textContent = `Part #${i + 1}: ${m.name || 'tripo_part_' + i}`;
+      quickSelect.appendChild(opt);
+    });
+    quickSelect.onchange = (e) => {
+      const val = e.target.value;
+      if (val !== '') {
+        const targetMesh = meshes[parseInt(val)];
+        if (targetMesh) {
+          selectPart(targetMesh);
+          const card = document.getElementById(`part-card-${val}`);
+          if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      }
+    };
+  }
 
   meshes.forEach((mesh, idx) => {
     const worldPos = new THREE.Vector3();
@@ -381,8 +414,10 @@ function initExplosionData(model) {
     const palHex = TRIPO_PALETTE[idx % TRIPO_PALETTE.length];
     paletteMaterials.set(mesh, new THREE.MeshStandardMaterial({
       color: palHex,
-      roughness: 0.4,
-      metalness: 0.1,
+      roughness: 0.35,
+      metalness: 0.05,
+      emissive: palHex,
+      emissiveIntensity: 0.12,
       side: THREE.DoubleSide
     }));
 
@@ -465,6 +500,9 @@ function selectPart(mesh) {
   selectedPartMesh = mesh;
   const info = partsData.get(mesh);
   if (!info) return;
+
+  const quickSelect = document.getElementById('quick-part-select');
+  if (quickSelect) quickSelect.value = info.index;
 
   document.querySelectorAll('.part-item').forEach(c => c.classList.remove('active'));
   const card = document.getElementById(`part-card-${info.index}`);
@@ -853,6 +891,315 @@ document.getElementById('grid-toggle').onclick = (e) => {
   document.getElementById('grid-toggle').classList.toggle('active', gridHelper.visible);
 };
 
+// --- INTERACTIVE 3D BRUSH SEGMENTATION & ANTI-BLEED SCOPE FILTERING ---
+let isBrushActive = false;
+let isBrushing = false;
+let brushLockedMesh = null; // Anti-bleed lock: locks onto initial part touched so stray sweeps onto other parts are ignored
+let brushedMeshes = new Set();
+let brushSavedMats = new Map();
+let brushColor = '#f43f5e';
+let brushRadius = 0.12;
+let brushScope = 'part'; // 'part' (Lock to Target Part - No Bleed) | 'multi' (Group Multiple Touched Parts)
+
+// 3D Brush Surface Helper Ring
+const brushHelperGeo = new THREE.RingGeometry(0.05, 0.08, 32);
+const brushHelperMat = new THREE.MeshBasicMaterial({
+  color: 0xf43f5e,
+  side: THREE.DoubleSide,
+  transparent: true,
+  opacity: 0.9,
+  depthTest: false
+});
+const brushHelper = new THREE.Mesh(brushHelperGeo, brushHelperMat);
+brushHelper.visible = false;
+brushHelper.renderOrder = 999;
+scene.add(brushHelper);
+
+const brushBtn = document.getElementById('tool-brush-btn');
+const brushToolbar = document.getElementById('brush-toolbar');
+const brushScopeSelect = document.getElementById('brush-scope-select');
+const brushRadiusSlider = document.getElementById('brush-radius-slider');
+const brushRadiusVal = document.getElementById('brush-radius-val');
+const brushColorPicker = document.getElementById('brush-color-picker');
+const brushGroupBtn = document.getElementById('brush-group-btn');
+const brushClearBtn = document.getElementById('brush-clear-btn');
+const brushCloseBtn = document.getElementById('brush-close-btn');
+
+function toggleBrushMode(forceState = null) {
+  isBrushActive = (forceState !== null) ? forceState : !isBrushActive;
+  if (brushBtn) brushBtn.classList.toggle('active', isBrushActive);
+  if (brushToolbar) brushToolbar.style.display = isBrushActive ? 'flex' : 'none';
+  brushHelper.visible = false;
+
+  if (!isBrushActive) {
+    clearBrushSession();
+  }
+}
+
+if (brushBtn) brushBtn.onclick = () => toggleBrushMode();
+if (brushCloseBtn) brushCloseBtn.onclick = () => toggleBrushMode(false);
+
+if (brushScopeSelect) {
+  brushScopeSelect.onchange = (e) => {
+    brushScope = e.target.value;
+  };
+}
+
+if (brushRadiusSlider) {
+  brushRadiusSlider.oninput = (e) => {
+    brushRadius = parseFloat(e.target.value);
+    if (brushRadiusVal) brushRadiusVal.innerText = `${brushRadius.toFixed(2)}m`;
+    const s = brushRadius / 0.12;
+    brushHelper.scale.set(s, s, s);
+  };
+}
+
+if (brushColorPicker) {
+  brushColorPicker.oninput = (e) => {
+    brushColor = e.target.value;
+    brushHelperMat.color.set(brushColor);
+    // Update currently highlighted brushed meshes
+    brushedMeshes.forEach(mesh => {
+      applyMeshHighlight(mesh, brushColor);
+    });
+  };
+}
+
+function applyMeshHighlight(mesh, hex) {
+  if (!mesh) return;
+  if (!brushSavedMats.has(mesh)) {
+    brushSavedMats.set(mesh, mesh.material);
+  }
+  mesh.material = new THREE.MeshStandardMaterial({
+    color: hex,
+    roughness: 0.3,
+    metalness: 0.05,
+    emissive: hex,
+    emissiveIntensity: 0.4,
+    side: THREE.DoubleSide
+  });
+
+  const info = partsData.get(mesh);
+  if (info) {
+    const card = document.getElementById(`part-card-${info.index}`);
+    if (card) {
+      card.style.borderColor = hex;
+      card.style.background = 'rgba(244, 63, 94, 0.22)';
+    }
+  }
+}
+
+function clearBrushSession() {
+  brushedMeshes.forEach(mesh => {
+    const orig = brushSavedMats.get(mesh) || paletteMaterials.get(mesh);
+    if (orig) mesh.material = orig;
+    const info = partsData.get(mesh);
+    if (info) {
+      const card = document.getElementById(`part-card-${info.index}`);
+      if (card) {
+        card.style.borderColor = '';
+        card.style.background = '';
+      }
+    }
+  });
+  brushSavedMats.clear();
+  brushedMeshes.clear();
+  brushLockedMesh = null;
+  isBrushing = false;
+  controls.enabled = true;
+}
+
+if (brushClearBtn) brushClearBtn.onclick = () => clearBrushSession();
+
+// Segment Brushed Parts as One Unified Color
+if (brushGroupBtn) {
+  brushGroupBtn.onclick = () => {
+    if (brushedMeshes.size === 0) {
+      alert('Please brush a part or group of parts on the 3D model first!');
+      return;
+    }
+
+    const unifiedHex = brushColor;
+    const count = brushedMeshes.size;
+
+    // Calculate group center for cohesive explosion if multiple parts are unified
+    const groupCenter = new THREE.Vector3();
+    brushedMeshes.forEach(mesh => {
+      const p = new THREE.Vector3();
+      mesh.getWorldPosition(p);
+      groupCenter.add(p);
+    });
+    groupCenter.divideScalar(count);
+
+    const groupDir = groupCenter.clone().sub(globalCenter);
+    if (groupDir.length() < 1e-4) groupDir.set(0, 1, 0);
+    groupDir.normalize();
+
+    brushedMeshes.forEach(mesh => {
+      const unifiedMat = new THREE.MeshStandardMaterial({
+        color: unifiedHex,
+        roughness: 0.35,
+        metalness: 0.05,
+        emissive: unifiedHex,
+        emissiveIntensity: 0.15,
+        side: THREE.DoubleSide
+      });
+
+      paletteMaterials.set(mesh, unifiedMat);
+      originalMaterials.set(mesh, cloneMaterialSafe(unifiedMat));
+      mesh.material = unifiedMat;
+
+      const info = partsData.get(mesh);
+      if (info) {
+        if (count > 1) {
+          info.explodeDirection.copy(groupDir);
+          info.name = `Grouped_${unifiedHex.replace('#', '')}`;
+        }
+        const colDot = document.getElementById(`color-dot-${info.index}`);
+        if (colDot) colDot.value = unifiedHex;
+        const card = document.getElementById(`part-card-${info.index}`);
+        if (card) {
+          card.style.borderColor = '';
+          card.style.background = '';
+          const nameSpan = card.querySelector('.part-name-text');
+          if (nameSpan && count > 1) nameSpan.innerText = info.name;
+        }
+      }
+    });
+
+    brushSavedMats.clear();
+    brushedMeshes.clear();
+    brushLockedMesh = null;
+
+    // Temporary floating feedback toast
+    const toast = document.createElement('div');
+    toast.className = 'glass';
+    toast.style.cssText = `position: fixed; top: 110px; left: 50%; transform: translateX(-50%);
+      padding: 8px 18px; border-radius: 20px; font-size: 12px; font-weight: 700; color: #fff;
+      background: rgba(16, 185, 129, 0.9); box-shadow: 0 4px 20px rgba(16, 185, 129, 0.4);
+      z-index: 2000; animation: slide-down-fade 0.2s ease;`;
+    toast.innerText = `✓ Segmented ${count} part(s) with unified color ${unifiedHex}`;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 2500);
+  };
+}
+
+// 3D Canvas Raycasting for Brush
+const brushRaycaster = new THREE.Raycaster();
+const brushMouse = new THREE.Vector2();
+
+function getModelIntersects(e, restrictMesh = null) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  brushMouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  brushMouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  brushRaycaster.setFromCamera(brushMouse, (isOrtho && orthoCamera) ? orthoCamera : camera);
+
+  if (!currentLoadedMesh) return [];
+
+  if (restrictMesh) {
+    return brushRaycaster.intersectObject(restrictMesh, true);
+  }
+
+  const meshes = [];
+  currentLoadedMesh.traverse((child) => {
+    if (child.isMesh && child.visible && child !== brushHelper) {
+      meshes.push(child);
+    }
+  });
+  return brushRaycaster.intersectObjects(meshes, true);
+}
+
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (!isBrushActive || e.button !== 0) return;
+  const hits = getModelIntersects(e);
+  if (hits.length > 0) {
+    isBrushing = true;
+    controls.enabled = false; // Freeze orbit camera so user can brush without spinning viewport
+    const hitMesh = hits[0].object;
+
+    if (brushScope === 'part') {
+      // ANTI-BLEED: Lock strictly onto this part/feature
+      brushLockedMesh = hitMesh;
+      brushedMeshes.add(hitMesh);
+      applyMeshHighlight(hitMesh, brushColor);
+    } else {
+      brushedMeshes.add(hitMesh);
+      applyMeshHighlight(hitMesh, brushColor);
+    }
+  }
+});
+
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (!isBrushActive) return;
+
+  // Position brush helper ring on model surface
+  const surfaceHits = getModelIntersects(e);
+  if (surfaceHits.length > 0) {
+    const hit = surfaceHits[0];
+    brushHelper.visible = true;
+    brushHelper.position.copy(hit.point).addScaledVector(hit.face.normal, 0.003);
+    brushHelper.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), hit.face.normal);
+
+    if (isBrushing) {
+      if (brushScope === 'part') {
+        // ANTI-BLEED PROTECTION:
+        // Raycast strictly against brushLockedMesh. If cursor sweeps across other meshes, DO NOT TAKE IT!
+        if (brushLockedMesh) {
+          const lockedHits = getModelIntersects(e, brushLockedMesh);
+          if (lockedHits.length > 0) {
+            brushedMeshes.add(brushLockedMesh);
+            applyMeshHighlight(brushLockedMesh, brushColor);
+          }
+        }
+      } else {
+        // Multi-part grouping mode:
+        brushedMeshes.add(hit.object);
+        applyMeshHighlight(hit.object, brushColor);
+      }
+    }
+  } else {
+    brushHelper.visible = false;
+  }
+});
+
+window.addEventListener('pointerup', () => {
+  if (isBrushing) {
+    isBrushing = false;
+    controls.enabled = true; // Restore orbit camera
+  }
+});
+
+// --- PARTS DROPDOWN TOGGLE & GLOBAL CLICK-OUTSIDE ---
+const partsDropdownToggle = document.getElementById('parts-dropdown-toggle');
+const partsDropdownMenu = document.getElementById('parts-dropdown-menu');
+const partsDropdownClose = document.getElementById('parts-dropdown-close');
+
+if (partsDropdownToggle && partsDropdownMenu) {
+  partsDropdownToggle.onclick = (e) => {
+    e.stopPropagation();
+    const isVisible = partsDropdownMenu.style.display !== 'none';
+    partsDropdownMenu.style.display = isVisible ? 'none' : 'flex';
+    partsDropdownToggle.classList.toggle('active', !isVisible);
+  };
+}
+
+if (partsDropdownClose && partsDropdownMenu) {
+  partsDropdownClose.onclick = () => {
+    partsDropdownMenu.style.display = 'none';
+    if (partsDropdownToggle) partsDropdownToggle.classList.remove('active');
+  };
+}
+
+// Click outside to close parts dropdown
+document.addEventListener('click', (e) => {
+  if (partsDropdownMenu && partsDropdownMenu.style.display !== 'none') {
+    if (!partsDropdownMenu.contains(e.target) && (!partsDropdownToggle || !partsDropdownToggle.contains(e.target))) {
+      partsDropdownMenu.style.display = 'none';
+      if (partsDropdownToggle) partsDropdownToggle.classList.remove('active');
+    }
+  }
+});
+
 // --- TRIPO3D EXPLOSION ENGINE ---
 function applyExplosion(progress, deltaSec) {
   if (partsData.size === 0) return;
@@ -1168,12 +1515,16 @@ async function handleFileUpload(file) {
     const res = await fetch('/api/upload', { method: 'POST', body: formData });
     const data = await res.json();
     if (data.status === 'success') {
-      stageText.innerText = 'Inspecting Geometry Topology...';
+      stageText.innerText = 'Geometry parsed. Initiating Auto-Segmentation...';
       percentText.innerText = '100%';
       barFill.style.width = '100%';
-      setTimeout(() => { banner.style.display = 'none'; }, 600);
 
       loadModelFromUrl(data.path, file.name, data.stats);
+
+      // Instantly run the segmentation pipeline automatically!
+      setTimeout(() => {
+        runAutoSegmentationPipeline(data.path, file.name);
+      }, 400);
     } else {
       banner.style.display = 'none';
       alert(data.error || 'Upload failed');
@@ -1217,6 +1568,7 @@ let pipelineStartTime = 0;
 function startLiveStopwatch() {
   pipelineStartTime = performance.now();
   const badge = document.getElementById('live-stopwatch');
+  if (!badge) return;
   badge.style.color = '#10b981';
   badge.style.boxShadow = '0 0 12px rgba(16, 185, 129, 0.4)';
 
@@ -1232,6 +1584,7 @@ function startLiveStopwatch() {
 function stopLiveStopwatch(finalFormatted) {
   if (stopwatchInterval) clearInterval(stopwatchInterval);
   const badge = document.getElementById('live-stopwatch');
+  if (!badge) return;
   badge.style.color = '#fff';
   badge.style.boxShadow = 'none';
   if (finalFormatted) {
@@ -1239,28 +1592,28 @@ function stopLiveStopwatch(finalFormatted) {
   }
 }
 
-document.getElementById('run-pipeline-btn').onclick = async () => {
-  if (!currentModelPath) {
-    alert('Please load or upload a 3D model first!');
+async function runAutoSegmentationPipeline(meshPath = null, modelTitle = null) {
+  const targetPath = meshPath || currentModelPath;
+  if (!targetPath) {
+    alert('Please upload or select a 3D model first!');
     return;
   }
-
-  const engineMode = document.getElementById('engine-mode-select').value;
-  const paintMode = document.getElementById('paint-mode-select').value;
-  const mcAlgo = document.getElementById('mc-algo-select').value;
-  const resolution = parseInt(document.getElementById('res-select').value);
 
   const banner = document.getElementById('progress-banner');
   const stageText = document.getElementById('progress-stage-text');
   const percentText = document.getElementById('progress-percent-text');
   const barFill = document.getElementById('progress-bar-fill');
-  banner.style.display = 'flex';
+  if (banner) banner.style.display = 'flex';
 
   // Reset timing fields
-  document.getElementById('time-step1').innerText = '-- s';
-  document.getElementById('time-step2').innerText = '-- s';
-  document.getElementById('time-step3').innerText = '-- s';
-  document.getElementById('time-total').innerText = '-- s';
+  const tStep1 = document.getElementById('time-step1');
+  const tStep2 = document.getElementById('time-step2');
+  const tStep3 = document.getElementById('time-step3');
+  const tTotal = document.getElementById('time-total');
+  if (tStep1) tStep1.innerText = '-- s';
+  if (tStep2) tStep2.innerText = '-- s';
+  if (tStep3) tStep3.innerText = '-- s';
+  if (tTotal) tTotal.innerText = '-- s';
   startLiveStopwatch();
 
   try {
@@ -1268,12 +1621,12 @@ document.getElementById('run-pipeline-btn').onclick = async () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        mesh_path: currentModelPath,
-        mode: engineMode,
-        preserve_materials: (paintMode === 'preserve'),
-        mc_algo: mcAlgo,
+        mesh_path: targetPath,
+        mode: 'tripo_exact',
+        preserve_materials: true,
+        mc_algo: 'dmc',
         steps: 50,
-        resolution: resolution,
+        resolution: 512,
         explosion_scale: 0.35
       })
     });
@@ -1288,47 +1641,50 @@ document.getElementById('run-pipeline-btn').onclick = async () => {
         const sRes = await fetch(`/api/status/${jobId}`);
         const sData = await sRes.json();
 
-        stageText.innerText = sData.stage || 'Processing...';
-        percentText.innerText = `${sData.progress || 0}%`;
-        barFill.style.width = `${sData.progress || 0}%`;
+        if (stageText) stageText.innerText = sData.stage || 'Processing...';
+        if (percentText) percentText.innerText = `${sData.progress || 0}%`;
+        if (barFill) barFill.style.width = `${sData.progress || 0}%`;
 
         if (sData.timings) {
-          if (sData.timings.step1 > 0) document.getElementById('time-step1').innerText = `${sData.timings.step1}s`;
-          if (sData.timings.step2 > 0) document.getElementById('time-step2').innerText = `${sData.timings.step2}s`;
+          if (tStep1 && sData.timings.step1 > 0) tStep1.innerText = `${sData.timings.step1}s`;
+          if (tStep2 && sData.timings.step2 > 0) tStep2.innerText = `${sData.timings.step2}s`;
         }
 
         if (sData.status === 'completed') {
           clearInterval(pollInterval);
-          setTimeout(() => { banner.style.display = 'none'; }, 600);
+          setTimeout(() => { if (banner) banner.style.display = 'none'; }, 600);
 
           if (sData.result && sData.result.timing) {
             const t = sData.result.timing;
-            document.getElementById('time-step1').innerText = `${t.step1}s`;
-            document.getElementById('time-step2').innerText = `${t.step2}s`;
-            document.getElementById('time-step3').innerText = `${t.step3}s`;
-            document.getElementById('time-total').innerText = `${t.formatted}`;
+            if (tStep1) tStep1.innerText = `${t.step1}s`;
+            if (tStep2) tStep2.innerText = `${t.step2}s`;
+            if (tStep3) tStep3.innerText = `${t.step3}s`;
+            if (tTotal) tTotal.innerText = `${t.formatted}`;
             stopLiveStopwatch(t.formatted);
           } else {
             stopLiveStopwatch();
           }
 
           // Load generated multi-node assembly
+          const title = modelTitle || document.getElementById('model-title-text').innerText;
           loadModelFromUrl(
             sData.result.assembly_glb,
-            `${document.getElementById('model-title-text').innerText} (Segmented Assembly)`,
+            `${title} (Segmented Assembly)`,
             sData.result.mesh_details
           );
 
           // Update Export Links
-          document.getElementById('download-assembly-btn').onclick = () => {
-            window.location.href = sData.result.assembly_glb;
-          };
-          document.getElementById('download-exploded-btn').onclick = () => {
-            window.location.href = sData.result.exploded_glb;
-          };
+          const dlAssemblyBtn = document.getElementById('download-assembly-btn');
+          const dlExplodedBtn = document.getElementById('download-exploded-btn');
+          if (dlAssemblyBtn) {
+            dlAssemblyBtn.onclick = () => { window.location.href = sData.result.assembly_glb; };
+          }
+          if (dlExplodedBtn) {
+            dlExplodedBtn.onclick = () => { window.location.href = sData.result.exploded_glb; };
+          }
         } else if (sData.status === 'failed') {
           clearInterval(pollInterval);
-          banner.style.display = 'none';
+          if (banner) banner.style.display = 'none';
           stopLiveStopwatch();
           alert(`Pipeline execution failed: ${sData.error}`);
         }
@@ -1337,11 +1693,16 @@ document.getElementById('run-pipeline-btn').onclick = async () => {
       }
     }, 800);
   } catch (err) {
-    banner.style.display = 'none';
+    if (banner) banner.style.display = 'none';
     stopLiveStopwatch();
     alert('Pipeline error: ' + err);
   }
-};
+}
+
+const runPipelineBtn = document.getElementById('run-pipeline-btn');
+if (runPipelineBtn) {
+  runPipelineBtn.onclick = () => runAutoSegmentationPipeline();
+}
 
 // --- KEYBOARD SHORTCUTS (Blender Standards) ---
 window.addEventListener('keydown', (e) => {
@@ -1355,6 +1716,9 @@ window.addEventListener('keydown', (e) => {
     if (currentLoadedMesh) autoFrameModel(currentLoadedMesh);
   } else if (e.key === '5') {
     document.getElementById('cam-proj').click();
+  } else if (e.key === 'b' || e.key === 'B') {
+    const bBtn = document.getElementById('tool-brush-btn');
+    if (bBtn) bBtn.click();
   } else if (e.key === 'h' && !e.altKey) {
     document.getElementById('editor-hide-btn').click();
   } else if (e.key === 'H' || (e.key === 'h' && e.altKey)) {

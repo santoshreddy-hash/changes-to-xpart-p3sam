@@ -6,10 +6,14 @@ import uuid
 import asyncio
 import threading
 import subprocess
+import logging
 import numpy as np
 import trimesh
 from pathlib import Path
 from aiohttp import web
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger("tripo3d_server")
 
 # Global GPU pipeline lock to prevent multiple concurrent PyTorch jobs from thrashing VRAM
 pipeline_lock = threading.Lock()

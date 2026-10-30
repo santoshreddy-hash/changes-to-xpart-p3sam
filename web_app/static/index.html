@@ -102,8 +102,15 @@
 
       <div class="bar-divider"></div>
 
-      <!-- Studio Lighting & Settings -->
+      <!-- 3D Brush Tool, Studio Lighting & Settings -->
       <div class="tool-btn-group">
+        <button id="tool-brush-btn" class="tool-btn" title="Interactive 3D Brush Segmentation Tool (B)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9.06 11.9l8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/>
+            <path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/>
+          </svg>
+          <span>3D Brush</span>
+        </button>
         <button id="studio-toggle-btn" class="tool-btn" title="Blender Studio & Lighting Settings">
           <span>⚙️ Studio</span>
         </button>
@@ -111,8 +118,19 @@
       </div>
     </div>
 
-    <!-- Right: Recording & Actions -->
+    <!-- Right: Parts Dropdown, Recording & Actions -->
     <div class="topbar-right">
+      <!-- Parts Dropdown Button -->
+      <button id="parts-dropdown-toggle" class="action-btn" title="Toggle Parts Hierarchy & Transform Inspector">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+        </svg>
+        <span>Parts (<span id="parts-badge-count">0</span>)</span>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+
+      <div class="bar-divider"></div>
+
       <div class="tool-btn-group">
         <button id="record-explode-btn" class="tool-btn record-action" title="Record 60 FPS Explosion Video to WebM">
           <span class="rec-icon">●</span> <span>Record Explode</span>
@@ -127,7 +145,7 @@
 
       <div class="header-actions">
         <input type="file" id="file-input" accept=".glb,.obj,.ply" style="display: none;">
-        <button id="upload-btn" class="action-btn" title="Upload 3D Mesh">
+        <button id="upload-btn" class="action-btn primary" title="Upload 3D Mesh">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
           </svg>
@@ -232,66 +250,47 @@
       </div>
     </div>
 
-    <hr style="border: 0; border-top: 1px solid var(--surface-border-subtle);">
-
-    <!-- Pipeline Parameters -->
-    <div>
-      <div class="section-title">
-        <span>Segmentation Engine</span>
-      </div>
-
-      <div class="param-group" style="margin-bottom: 12px;">
-        <label class="param-label">
-          <span>Paint & Material Mode</span>
-          <span style="color: var(--success-green); font-family: monospace;">Authentic PBR</span>
-        </label>
-        <select id="paint-mode-select" class="param-select">
-          <option value="preserve" selected>Keep Original Paint & Textures (Photorealistic)</option>
-          <option value="palette">AI Color-Coded Segments (Vibrant Palette)</option>
-        </select>
-      </div>
-
-      <div class="param-group" style="margin-bottom: 12px;">
-        <label class="param-label">
-          <span>Engine Pipeline</span>
-          <span style="color: var(--success-green); font-family: monospace;">20-25s Fast SAM</span>
-        </label>
-        <select id="engine-mode-select" class="param-select">
-          <option value="tripo_exact" selected>Fast P3-SAM Segmentation & Assembly (Exact Tripo3D ~20-25s)</option>
-          <option value="xpart_dit">X-Part DiT Volumetric Diffusion (~80s, 50-step generative)</option>
-        </select>
-      </div>
-
-      <div class="param-group" style="margin-bottom: 12px;">
-        <label class="param-label">
-          <span>Marching Cubes Algo</span>
-          <span style="color: var(--success-green); font-family: monospace;">82 ms (70× faster)</span>
-        </label>
-        <select id="mc-algo-select" class="param-select">
-          <option value="dmc" selected>GPU DiffDMC (CUDA Extension)</option>
-          <option value="mc">CPU Scikit-Image (Slow Fallback)</option>
-        </select>
-      </div>
-
-      <div class="param-group" style="margin-bottom: 16px;">
-        <label class="param-label">
-          <span>Grid Resolution</span>
-          <span style="font-family: monospace;">512³</span>
-        </label>
-        <select id="res-select" class="param-select">
-          <option value="512" selected>512³ (Lossless Sharp Geometry)</option>
-          <option value="256">256³ (Draft Preview)</option>
-        </select>
-      </div>
-
-      <button id="run-pipeline-btn" class="action-btn primary" style="width: 100%; justify-content: center; padding: 13px; font-weight: 700;">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polygon points="5 3 19 12 5 21 5 3"/>
-        </svg>
-        Run Full Part Segmentation
-      </button>
     </div>
   </aside>
+
+  <!-- Floating 3D Brush Segmentation Bar -->
+  <div id="brush-toolbar" class="brush-toolbar glass" style="display: none;">
+    <div class="brush-tool-indicator">
+      <span class="brush-dot-pulse"></span>
+      <span>3D Brush Active</span>
+    </div>
+
+    <div class="bar-divider"></div>
+
+    <div class="brush-control-item">
+      <label>Target Scope:</label>
+      <select id="brush-scope-select" class="tool-select">
+        <option value="part" selected>Lock to Target Part (No Bleed)</option>
+        <option value="multi">Group Multiple Touched Parts</option>
+      </select>
+    </div>
+
+    <div class="brush-control-item">
+      <label>Radius:</label>
+      <input type="range" id="brush-radius-slider" min="0.02" max="0.5" step="0.01" value="0.12" style="width: 70px;">
+      <span id="brush-radius-val" style="font-family: monospace; font-size: 10.5px;">0.12m</span>
+    </div>
+
+    <div class="brush-control-item">
+      <label>Group Color:</label>
+      <input type="color" id="brush-color-picker" value="#f43f5e" style="cursor: pointer; border: none; width: 22px; height: 22px; border-radius: 5px; background: none;">
+    </div>
+
+    <div class="bar-divider"></div>
+
+    <button id="brush-group-btn" class="action-btn primary" title="Segment All Brushed Parts as One Color">
+      <span>Segment as One Color</span>
+    </button>
+    <button id="brush-clear-btn" class="tool-btn" title="Clear Brushed Selection">
+      <span>Clear</span>
+    </button>
+    <button id="brush-close-btn" class="icon-tool-btn" title="Exit Brush Mode">✕</button>
+  </div>
 
   <!-- Floating Pipeline Progress Banner -->
   <div id="progress-banner" class="progress-banner glass">
@@ -304,17 +303,25 @@
     </div>
   </div>
 
-  <!-- Right Drawer: Parts Hierarchy & Interactive Editing -->
-  <aside class="parts-drawer glass">
+  <!-- Right Dropdown: Parts Hierarchy & Interactive Editing -->
+  <aside id="parts-dropdown-menu" class="parts-dropdown-panel glass" style="display: none;">
     <div class="parts-header">
       <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="font-size: 14px; font-weight: 600;">Parts Hierarchy & Editing</span>
+        <span style="font-size: 13.5px; font-weight: 700;">Parts Hierarchy & Editing</span>
         <span id="part-count" class="parts-count">0 PARTS</span>
       </div>
       <div class="parts-quick-actions">
         <button id="reset-parts-btn" class="icon-tool-btn" title="Reset All Part Transforms">↺</button>
         <button id="show-all-parts-btn" class="icon-tool-btn" title="Unhide All Parts">👁️</button>
+        <button id="parts-dropdown-close" class="icon-tool-btn" title="Close Parts Panel">✕</button>
       </div>
+    </div>
+
+    <!-- Quick Part Picker Dropdown -->
+    <div class="parts-quick-picker-box">
+      <select id="quick-part-select" class="param-select" style="width: 100%; margin-bottom: 8px;">
+        <option value="">-- Choose Part to Inspect & Edit --</option>
+      </select>
     </div>
 
     <!-- Active Part Selected Editing Box (Blender Transform & Material Controls) -->
