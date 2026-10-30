@@ -258,46 +258,60 @@
     <div class="brush-tool-indicator">
       <span class="brush-dot-pulse"></span>
       <span>3D Brush</span>
-      <span id="brush-faces-badge" class="brush-badge">0 faces</span>
+      <span id="brush-faces-badge" class="brush-badge">0 faces (0 parts)</span>
     </div>
 
     <div class="bar-divider"></div>
 
     <div class="brush-control-item">
       <label>Mode:</label>
-      <select id="brush-mode-select" class="tool-select" title="Brush area freehand or flood-fill connected planar feature">
-        <option value="paint" selected>Brush Area</option>
+      <select id="brush-mode-select" class="tool-select" title="Brush selection mode">
+        <option value="paint" selected>Freehand Area</option>
         <option value="flood">Flood Feature</option>
+        <option value="semantic">Global Semantic</option>
       </select>
     </div>
 
     <div class="brush-control-item">
-      <label>Anti-Bleed:</label>
-      <select id="brush-scope-select" class="tool-select" title="Lock brush strictly to the target part faces to prevent bleed">
-        <option value="part" selected>Lock to Part</option>
-        <option value="multi">All Parts</option>
+      <label>Target:</label>
+      <select id="brush-scope-select" class="tool-select" title="Multi-region unrestricted painting across all parts vs locked to single part">
+        <option value="multi" selected>Multi-Region (All Parts)</option>
+        <option value="part">Lock to Single Part</option>
       </select>
     </div>
 
     <div class="brush-control-item">
       <label>Radius:</label>
-      <input type="range" id="brush-radius-slider" min="0.02" max="0.5" step="0.01" value="0.10" style="width: 55px;">
+      <input type="range" id="brush-radius-slider" min="0.02" max="0.5" step="0.01" value="0.10" style="width: 50px;">
       <span id="brush-radius-val" style="font-family: monospace; font-size: 10px;">0.10m</span>
-    </div>
-
-    <div class="brush-control-item">
-      <label>New Color:</label>
-      <input type="color" id="brush-color-picker" value="#f43f5e" style="cursor: pointer; border: none; width: 22px; height: 22px; border-radius: 5px; background: none;" title="Color for the new segmented part">
     </div>
 
     <div class="bar-divider"></div>
 
-    <button id="brush-split-btn" class="action-btn primary" title="Extract and carve brushed area into a new separate segmented part">
+    <!-- Feature 2: Cut / Divide into Multiple Parts with Different Colors -->
+    <button id="brush-cut-btn" class="action-btn primary" title="Cut / divide brushed region into separate parts with different colors">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
         <circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/>
       </svg>
-      <span>Split as Separate Part</span>
+      <span>✂️ Cut / Divide Part</span>
     </button>
+
+    <!-- Feature 1: Join / Merge Segmented Parts -->
+    <button id="brush-join-btn" class="action-btn secondary" title="Join all brushed or selected parts together into one single unified part">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+      </svg>
+      <span>🔗 Join Parts</span>
+    </button>
+
+    <!-- Global Semantic Feature Auto-Detection -->
+    <button id="brush-semantic-match-btn" class="tool-btn" title="Scan entire 3D object to find and select all matching semantic features (symmetrical legs, handles, drawers)">
+      <span>🌐 Semantic Match</span>
+    </button>
+
+    <div class="bar-divider"></div>
+
     <button id="brush-clear-btn" class="tool-btn" title="Clear brushed faces">
       <span>Clear</span>
     </button>
@@ -334,6 +348,15 @@
       <select id="quick-part-select" class="param-select" style="width: 100%; margin-bottom: 8px;">
         <option value="">-- Choose Part to Inspect & Edit --</option>
       </select>
+    </div>
+
+    <!-- Multi-Select Bulk Actions Bar (Appears when parts checkboxes are checked) -->
+    <div id="parts-bulk-bar" style="display: none; align-items: center; justify-content: space-between; padding: 6px 10px; margin-bottom: 8px; background: rgba(99, 102, 241, 0.18); border: 1px solid rgba(99, 102, 241, 0.4); border-radius: 8px; font-size: 11px;">
+      <span id="parts-bulk-text" style="font-weight: 600; color: #a5b4fc;">0 parts checked</span>
+      <div style="display: flex; gap: 6px;">
+        <button id="parts-bulk-join-btn" class="action-btn secondary" style="padding: 3px 8px; font-size: 10.5px;">🔗 Join Selected</button>
+        <button id="parts-bulk-clear-btn" class="icon-tool-btn" style="font-size: 10px;" title="Clear Checks">✕</button>
+      </div>
     </div>
 
     <!-- Active Part Selected Editing Box (Blender Transform & Material Controls) -->

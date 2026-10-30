@@ -234,6 +234,26 @@ header.top-nav-bar {
   box-shadow: 0 6px 18px rgba(99, 102, 241, 0.5);
 }
 
+.action-btn.secondary {
+  background: linear-gradient(135deg, #059669, #10b981);
+  border: none;
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);
+  color: #fff;
+}
+
+.action-btn.secondary:hover {
+  background: linear-gradient(135deg, #047857, #059669);
+  box-shadow: 0 6px 18px rgba(16, 185, 129, 0.5);
+}
+
+.part-checkbox {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  accent-color: #6366f1;
+}
+
 /* Left Panel (Pipeline & Statistics Controls) */
 .pipeline-drawer {
   position: absolute;
