@@ -113,6 +113,26 @@ const ANIM_DURATION = 800; // ms
 const tripoOvershootEasing = (e) => 1 + 2.2 * Math.pow(e - 1, 3) + 1.2 * Math.pow(e - 1, 2);
 const tripoCollapseEasing = (e) => e < 0.5 ? 4 * e * e * e : 1 - Math.pow(-2 * e + 2, 3) / 2;
 
+function resetExplosionToRest() {
+  currentState = States.Idle;
+  isExploded = false;
+  const expBtn = document.getElementById('explode-toggle');
+  const expTxt = document.getElementById('explode-text');
+  const expSld = document.getElementById('explode-slider');
+  if (expBtn) expBtn.classList.remove('active');
+  if (expTxt) expTxt.innerText = 'Explode';
+  if (expSld) expSld.value = 0;
+
+  partsData.forEach((info, mesh) => {
+    if (mesh && info) {
+      mesh.position.copy(info.originalLocalPosition).add(info.customOffset || new THREE.Vector3());
+      mesh.quaternion.copy(info.originalRotation);
+      info.accumulatedRotation = 0;
+      mesh.updateMatrixWorld(true);
+    }
+  });
+}
+
 // --- BULLETPROOF MATERIAL CLONER ---
 function cloneMaterialSafe(mat) {
   if (!mat) return new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.5 });
@@ -417,15 +437,31 @@ function updateBulkActionBar() {
   }
 }
 
-// Bulk Join / Clear wiring
+// Bulk Join / Split / Clear wiring
 const bulkJoinBtn = document.getElementById('parts-bulk-join-btn');
 if (bulkJoinBtn) {
   bulkJoinBtn.onclick = () => {
     if (checkedParts.size < 2) {
-      showToast('⚠️ Please check at least 2 parts to join them!', 'warning');
+      showToast('⚠️ Please check at least 2 parts to combine them!', 'warning');
       return;
     }
     joinSelectedParts(Array.from(checkedParts));
+  };
+}
+
+const bulkSplitBtn = document.getElementById('parts-bulk-split-btn');
+if (bulkSplitBtn) {
+  bulkSplitBtn.onclick = () => {
+    cutOrDivideBrushedParts();
+  };
+}
+
+const bulkClearBtn = document.getElementById('parts-bulk-clear-btn');
+if (bulkClearBtn) {
+  bulkClearBtn.onclick = () => {
+    checkedParts.clear();
+    updateBulkActionBar();
+    rebuildPartsHierarchyUI();
   };
 }
 
@@ -1081,6 +1117,7 @@ const brushHelperMat = new THREE.MeshBasicMaterial({
 const brushHelper = new THREE.Mesh(brushHelperGeo, brushHelperMat);
 brushHelper.visible = false;
 brushHelper.renderOrder = 999;
+brushHelper.raycast = function() {}; // Prevent raycaster interference
 scene.add(brushHelper);
 
 // 3D Painted Surface Overlay Material
@@ -1418,6 +1455,7 @@ function reassignBrushedFaces() {
     return;
   }
 
+  resetExplosionToRest();
   saveStateToUndoStack(`Reassign brushed faces to ${partsData.get(targetMesh).name}`);
 
   const piecesToMerge = [targetMesh];
@@ -1432,12 +1470,15 @@ function reassignBrushedFaces() {
       const { selectedGeo, remainingGeo } = partitionGeometry(mesh.geometry, faceSet);
       mesh.geometry.dispose();
       mesh.geometry = remainingGeo;
+      mesh.geometry.computeBoundingBox();
+      mesh.geometry.computeBoundingSphere();
+      mesh.updateMatrixWorld(true);
       
       const pieceMesh = new THREE.Mesh(selectedGeo, targetMesh.material);
       pieceMesh.position.copy(mesh.position);
       pieceMesh.quaternion.copy(mesh.quaternion);
       pieceMesh.scale.copy(mesh.scale);
-      (mesh.parent || currentLoadedMesh).add(pieceMesh);
+      (mesh.parent || currentLoadedMesh || scene).add(pieceMesh);
       piecesToMerge.push(pieceMesh);
     }
   });
@@ -1461,8 +1502,20 @@ function toggleBrushMode(forceState = null) {
   if (brushToolbar) brushToolbar.style.display = isBrushActive ? 'flex' : 'none';
   brushHelper.visible = false;
 
-  if (!isBrushActive) {
+  if (isBrushActive) {
+    resetExplosionToRest();
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.NONE, // In brush mode, left mouse button paints without camera rotation!
+      MIDDLE: THREE.MOUSE.DOLLY,
+      RIGHT: THREE.MOUSE.ROTATE
+    };
+  } else {
     clearBrushSelection();
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.ROTATE,
+      MIDDLE: THREE.MOUSE.DOLLY,
+      RIGHT: THREE.MOUSE.PAN
+    };
   }
 }
 
@@ -1702,6 +1755,7 @@ function paintFacesOnMesh(mesh, worldHitPoint, worldHitNormal) {
   }
   const faceSet = selectedMeshFaces.get(mesh);
 
+  mesh.updateMatrixWorld(true);
   const localHitPoint = mesh.worldToLocal(worldHitPoint.clone());
   const scale = mesh.getWorldScale(new THREE.Vector3());
   const avgScale = (scale.x + scale.y + scale.z) / 3 || 1;
@@ -1715,10 +1769,10 @@ function paintFacesOnMesh(mesh, worldHitPoint, worldHitNormal) {
   const minZ = localHitPoint.z - localRadius;
   const maxZ = localHitPoint.z + localRadius;
 
-  let localHitNorm = new THREE.Vector3(0, 1, 0);
+  let localHitNorm = null;
   if (worldHitNormal) {
-    const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld).invert();
-    localHitNorm.copy(worldHitNormal).applyMatrix3(normalMatrix).normalize();
+    const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
+    localHitNorm = worldHitNormal.clone().applyMatrix3(normalMatrix).normalize();
   }
 
   const pA = new THREE.Vector3();
@@ -1760,27 +1814,29 @@ function paintFacesOnMesh(mesh, worldHitPoint, worldHitNormal) {
       (pA.z + pB.z + pC.z) / 3
     );
 
-    const dCentroid2 = centroid.distanceToSquared(localHitPoint);
     const dMin2 = Math.min(
-      dCentroid2,
+      centroid.distanceToSquared(localHitPoint),
       pA.distanceToSquared(localHitPoint),
       pB.distanceToSquared(localHitPoint),
       pC.distanceToSquared(localHitPoint)
     );
 
     if (dMin2 <= r2) {
-      cb.subVectors(pC, pB);
-      ab.subVectors(pA, pB);
-      fn.crossVectors(cb, ab).normalize();
-
-      if (fn.dot(localHitNorm) > 0.05) {
-        if (brushSubMode === 'paint') {
-          faceSet.add(f);
-          changed = true;
-        } else if (brushSubMode === 'erase') {
-          faceSet.delete(f);
-          changed = true;
+      if (localHitNorm) {
+        cb.subVectors(pC, pB);
+        ab.subVectors(pA, pB);
+        fn.crossVectors(cb, ab).normalize();
+        if (fn.dot(localHitNorm) < -0.2) {
+          continue; // Don't paint opposite side backfaces
         }
+      }
+
+      if (brushSubMode === 'paint') {
+        faceSet.add(f);
+        changed = true;
+      } else if (brushSubMode === 'erase') {
+        faceSet.delete(f);
+        changed = true;
       }
     }
   }
@@ -1851,6 +1907,8 @@ function updateBrushOverlay() {
       const oGeo = new THREE.BufferGeometry();
       overlayMesh = new THREE.Mesh(oGeo, brushSelectionMat);
       overlayMesh.renderOrder = 998;
+      overlayMesh.raycast = function() {}; // Prevent raycast interference
+      overlayMesh.isBrushOverlay = true;
       brushOverlayMeshes.set(mesh, overlayMesh);
     }
 
@@ -2136,16 +2194,20 @@ function partitionGeometry(sourceGeo, selectedSet) {
 function mergeMeshesIntoSinglePart(meshesToMerge, customName = null, customHex = null) {
   if (!meshesToMerge || meshesToMerge.length < 2) return null;
 
+  resetExplosionToRest();
   saveStateToUndoStack(`Combine ${meshesToMerge.length} parts`);
 
   const parentObj = meshesToMerge[0].parent || currentLoadedMesh || scene;
+  parentObj.updateMatrixWorld(true);
+  const parentWorldInv = parentObj.matrixWorld.clone().invert();
 
   // Transform all meshes to common parent coordinates
   const transformedGeos = [];
   meshesToMerge.forEach(mesh => {
-    mesh.updateMatrix();
+    mesh.updateMatrixWorld(true);
+    const toParentMatrix = parentWorldInv.clone().multiply(mesh.matrixWorld);
     const gClone = mesh.geometry.clone();
-    gClone.applyMatrix4(mesh.matrix);
+    gClone.applyMatrix4(toParentMatrix);
     const nonIndexed = gClone.index ? gClone.toNonIndexed() : gClone;
     transformedGeos.push(nonIndexed);
   });
@@ -2200,14 +2262,6 @@ function mergeMeshesIntoSinglePart(meshesToMerge, customName = null, customHex =
   const joinedMesh = new THREE.Mesh(mergedGeo, joinedMat);
   joinedMesh.name = joinedName;
 
-  // Joined part center & explosion direction
-  const jBox = new THREE.Box3().setFromObject(joinedMesh);
-  const jCenter = new THREE.Vector3();
-  jBox.getCenter(jCenter);
-  const jDir = jCenter.clone().sub(globalCenter);
-  if (jDir.length() < 1e-4) jDir.set(0, 1, 0);
-  jDir.normalize();
-
   // Remove old individual meshes
   meshesToMerge.forEach(oldMesh => {
     if (oldMesh.parent) oldMesh.parent.remove(oldMesh);
@@ -2218,6 +2272,15 @@ function mergeMeshesIntoSinglePart(meshesToMerge, customName = null, customHex =
   });
 
   parentObj.add(joinedMesh);
+  joinedMesh.updateMatrixWorld(true);
+
+  // Joined part center & explosion direction
+  const jBox = new THREE.Box3().setFromObject(joinedMesh);
+  const jCenter = new THREE.Vector3();
+  jBox.getCenter(jCenter);
+  const jDir = jCenter.clone().sub(globalCenter);
+  if (jDir.length() < 1e-4) jDir.set(0, 1, 0);
+  jDir.normalize();
 
   const joinedPartInfo = {
     mesh: joinedMesh,
@@ -2254,18 +2317,61 @@ function mergeMeshesIntoSinglePart(meshesToMerge, customName = null, customHex =
 }
 
 function joinSelectedParts(targetMeshes = null) {
+  resetExplosionToRest();
+
   let meshesToJoin = targetMeshes;
+  const activeBrushedMeshes = Array.from(selectedMeshFaces.keys()).filter(m => selectedMeshFaces.get(m).size > 0);
+
+  // Case 1: User brushed faces across 2 or more parts
+  if ((!meshesToJoin || meshesToJoin.length === 0) && activeBrushedMeshes.length >= 2) {
+    saveStateToUndoStack('Combine brushed regions across parts');
+    const piecesToMerge = [];
+
+    activeBrushedMeshes.forEach(mesh => {
+      const faceSet = selectedMeshFaces.get(mesh);
+      const srcGeo = mesh.geometry;
+      const isIndexed = srcGeo.index !== null;
+      const totalFaces = isIndexed ? (srcGeo.index.count / 3) : (srcGeo.attributes.position.count / 3);
+      const parentObj = mesh.parent || currentLoadedMesh || scene;
+
+      if (faceSet.size >= totalFaces) {
+        // All faces brushed on this mesh: include the entire mesh
+        piecesToMerge.push(mesh);
+      } else {
+        // Carve out brushed faces
+        const { selectedGeo, remainingGeo } = partitionGeometry(srcGeo, faceSet);
+        mesh.geometry.dispose();
+        mesh.geometry = remainingGeo;
+        mesh.geometry.computeBoundingBox();
+        mesh.geometry.computeBoundingSphere();
+        mesh.updateMatrixWorld(true);
+
+        const pieceMesh = new THREE.Mesh(selectedGeo, mesh.material);
+        pieceMesh.position.copy(mesh.position);
+        pieceMesh.quaternion.copy(mesh.quaternion);
+        pieceMesh.scale.copy(mesh.scale);
+        parentObj.add(pieceMesh);
+        piecesToMerge.push(pieceMesh);
+      }
+    });
+
+    const newJoinedMesh = mergeMeshesIntoSinglePart(piecesToMerge, 'combined_part');
+    clearBrushSelection();
+    checkedParts.clear();
+    updateBulkActionBar();
+    return newJoinedMesh;
+  }
+
+  // Case 2: User checked 2+ parts in hierarchy
   if (!meshesToJoin || meshesToJoin.length === 0) {
     if (checkedParts.size >= 2) {
       meshesToJoin = Array.from(checkedParts);
-    } else {
-      meshesToJoin = Array.from(selectedMeshFaces.keys()).filter(m => selectedMeshFaces.get(m).size > 0);
     }
   }
 
   if (!meshesToJoin || meshesToJoin.length < 2) {
-    showToast('⚠️ Please select or brush across at least 2 parts to join them!', 'warning');
-    return;
+    showToast('⚠️ Please select or brush across at least 2 parts to combine them!', 'warning');
+    return null;
   }
 
   const newJoinedMesh = mergeMeshesIntoSinglePart(meshesToJoin);
@@ -2276,114 +2382,95 @@ function joinSelectedParts(targetMeshes = null) {
 
 if (brushJoinBtn) brushJoinBtn.onclick = () => joinSelectedParts();
 
-// FEATURE 2: CUT / DIVIDE One Segmented Part into Multiple Parts with DIFFERENT COLORS
-function cutOrDivideBrushedParts() {
-  const activeMeshes = Array.from(selectedMeshFaces.keys()).filter(m => selectedMeshFaces.get(m).size > 0);
-  if (activeMeshes.length === 0) {
-    showToast('⚠️ Please brush on a part where you want to cut or divide it!', 'warning');
-    return;
+// FEATURE 2: SEPARATE / CUT / DIVIDE Segmented Parts into Multiple Independent Pieces with DIFFERENT VIBRANT COLORS
+function bisectMeshIntoTwoPieces(targetMesh) {
+  if (!targetMesh || !targetMesh.geometry) return false;
+  const geo = targetMesh.geometry;
+  const isIndexed = geo.index !== null;
+  const index = geo.index;
+  const pos = geo.attributes.position;
+  const totalFaces = isIndexed ? (index.count / 3) : (pos.count / 3);
+  if (totalFaces < 2) return false;
+
+  geo.computeBoundingBox();
+  const box = geo.boundingBox;
+  const size = new THREE.Vector3().subVectors(box.max, box.min);
+
+  let axis = 'x';
+  if (size.y >= size.x && size.y >= size.z) axis = 'y';
+  else if (size.z >= size.x && size.z >= size.y) axis = 'z';
+
+  const mid = (box.min[axis] + box.max[axis]) / 2;
+
+  const setA = new Set();
+  for (let f = 0; f < totalFaces; f++) {
+    const i0 = isIndexed ? index.getX(f * 3) : f * 3;
+    const i1 = isIndexed ? index.getX(f * 3 + 1) : f * 3 + 1;
+    const i2 = isIndexed ? index.getX(f * 3 + 2) : f * 3 + 2;
+    const v0 = pos[axis === 'x' ? 'getX' : (axis === 'y' ? 'getY' : 'getZ')](i0);
+    const v1 = pos[axis === 'x' ? 'getX' : (axis === 'y' ? 'getY' : 'getZ')](i1);
+    const v2 = pos[axis === 'x' ? 'getX' : (axis === 'y' ? 'getY' : 'getZ')](i2);
+    const centerAxis = (v0 + v1 + v2) / 3;
+    if (centerAxis < mid) {
+      setA.add(f);
+    }
   }
 
-  saveStateToUndoStack('Separate / Cut brushed part(s)');
+  if (setA.size === 0 || setA.size === totalFaces) {
+    setA.clear();
+    const half = Math.floor(totalFaces / 2);
+    for (let f = 0; f < half; f++) setA.add(f);
+  }
 
-  let cutCount = 0;
-  const newlyCreatedMeshes = [];
+  const { selectedGeo: geo1, remainingGeo: geo2 } = partitionGeometry(geo, setA);
 
-  activeMeshes.forEach(parentMesh => {
-    const faceSet = selectedMeshFaces.get(parentMesh);
-    const srcGeo = parentMesh.geometry;
-    const isIndexed = srcGeo.index !== null;
-    const totalFaces = isIndexed ? (srcGeo.index.count / 3) : (srcGeo.attributes.position.count / 3);
+  const parentInfo = partsData.get(targetMesh);
+  const baseName = parentInfo ? parentInfo.name : 'part';
+  const parentObj = targetMesh.parent || currentLoadedMesh || scene;
 
-    if (faceSet.size === 0) return;
+  parentObj.remove(targetMesh);
+  partsData.delete(targetMesh);
+  paletteMaterials.delete(targetMesh);
+  originalMaterials.delete(targetMesh);
 
-    if (faceSet.size >= totalFaces) {
-      // All faces brushed: divide disjoint components if available
-      const didDivide = dividePartIntoConnectedComponents(parentMesh, false);
-      if (didDivide) cutCount++;
-      return;
-    }
-
-    const { selectedGeo, remainingGeo } = partitionGeometry(srcGeo, faceSet);
-
-    // Color 1 for Cut Piece 1 (brushed area)
-    const color1 = getNextDistinctPaletteColor();
-    // Color 2 for Cut Piece 2 (remaining area) - guaranteed DIFFERENT color!
-    const color2 = getNextDistinctPaletteColor();
-
-    const mat1 = new THREE.MeshStandardMaterial({
-      color: color1,
+  const newMeshes = [];
+  [geo1, geo2].forEach((pieceGeo, pIdx) => {
+    const col = getNextDistinctPaletteColor();
+    const mat = new THREE.MeshStandardMaterial({
+      color: col,
       roughness: 0.35,
       metalness: 0.05,
-      emissive: color1,
+      emissive: col,
       emissiveIntensity: 0.15,
       side: THREE.DoubleSide
     });
-
-    const mat2 = new THREE.MeshStandardMaterial({
-      color: color2,
-      roughness: 0.35,
-      metalness: 0.05,
-      emissive: color2,
-      emissiveIntensity: 0.15,
-      side: THREE.DoubleSide
-    });
-
-    // Update parent mesh with remaining geometry and Color 2
-    parentMesh.geometry.dispose();
-    parentMesh.geometry = remainingGeo;
-    parentMesh.material = mat2;
-    paletteMaterials.set(parentMesh, mat2);
-    originalMaterials.set(parentMesh, cloneMaterialSafe(mat2));
-    parentMesh.geometry.computeBoundingBox();
-    parentMesh.geometry.computeBoundingSphere();
-
-    const parentInfo = partsData.get(parentMesh);
-    if (parentInfo) {
-      const pBox = new THREE.Box3().setFromObject(parentMesh);
-      const pCenter = new THREE.Vector3();
-      pBox.getCenter(pCenter);
-      parentInfo.geometryCenterOffset.copy(pCenter);
-      const pDir = pCenter.clone().sub(globalCenter);
-      if (pDir.length() < 1e-4) pDir.set(0, 1, 0);
-      parentInfo.explodeDirection.copy(pDir.normalize());
-    }
-
-    // Create Piece 1 mesh with Color 1
     const nextIdx = partsData.size;
-    const piece1Name = `${parentInfo ? parentInfo.name : 'part'}_cut_${nextIdx + 1}`;
-    const piece1Mesh = new THREE.Mesh(selectedGeo, mat1);
-    piece1Mesh.name = piece1Name;
+    const pieceName = `${baseName}_half_${pIdx + 1}`;
+    const pMesh = new THREE.Mesh(pieceGeo, mat);
+    pMesh.name = pieceName;
+    pMesh.position.copy(targetMesh.position);
+    pMesh.quaternion.copy(targetMesh.quaternion);
+    pMesh.scale.copy(targetMesh.scale);
+    parentObj.add(pMesh);
 
-    piece1Mesh.position.copy(parentMesh.position);
-    piece1Mesh.quaternion.copy(parentMesh.quaternion);
-    piece1Mesh.scale.copy(parentMesh.scale);
+    pMesh.updateMatrixWorld(true);
+    const pBox = new THREE.Box3().setFromObject(pMesh);
+    const pCenter = new THREE.Vector3();
+    pBox.getCenter(pCenter);
+    const pDir = pCenter.clone().sub(globalCenter);
+    if (pDir.length() < 1e-4) pDir.set(0, 1, 0);
+    pDir.normalize();
 
-    if (parentMesh.parent) {
-      parentMesh.parent.add(piece1Mesh);
-    } else if (currentLoadedMesh) {
-      currentLoadedMesh.add(piece1Mesh);
-    } else {
-      scene.add(piece1Mesh);
-    }
-
-    const nBox = new THREE.Box3().setFromObject(piece1Mesh);
-    const nCenter = new THREE.Vector3();
-    nBox.getCenter(nCenter);
-    const nDir = nCenter.clone().sub(globalCenter);
-    if (nDir.length() < 1e-4) nDir.set(0, 1, 0);
-    nDir.normalize();
-
-    const piece1Info = {
-      mesh: piece1Mesh,
+    const info = {
+      mesh: pMesh,
       index: nextIdx,
-      name: piece1Name,
-      originalLocalPosition: piece1Mesh.position.clone(),
-      originalRotation: piece1Mesh.quaternion.clone(),
-      originalScale: piece1Mesh.scale.clone(),
-      explodeDirection: nDir,
+      name: pieceName,
+      originalLocalPosition: pMesh.position.clone(),
+      originalRotation: pMesh.quaternion.clone(),
+      originalScale: pMesh.scale.clone(),
+      explodeDirection: pDir,
       distanceWeight: 1.0,
-      geometryCenterOffset: nCenter.clone(),
+      geometryCenterOffset: pCenter.clone(),
       accumulatedRotation: 0,
       rotationAxis: new THREE.Vector3(1, 0, 0),
       rotationSpeedFactor: 1.0,
@@ -2393,17 +2480,175 @@ function cutOrDivideBrushedParts() {
       customScale: 1.0,
       visible: true
     };
-
-    partsData.set(piece1Mesh, piece1Info);
-    paletteMaterials.set(piece1Mesh, mat1);
-    originalMaterials.set(piece1Mesh, cloneMaterialSafe(mat1));
-
-    newlyCreatedMeshes.push(piece1Mesh);
-    cutCount++;
+    partsData.set(pMesh, info);
+    paletteMaterials.set(pMesh, mat);
+    originalMaterials.set(pMesh, cloneMaterialSafe(mat));
+    newMeshes.push(pMesh);
   });
 
+  targetMesh.geometry.dispose();
+  return newMeshes;
+}
+
+function dividePartIntoIndependentPieces(targetMesh) {
+  if (!targetMesh || !targetMesh.geometry) return false;
+  const components = getConnectedComponents(targetMesh.geometry);
+  if (components.length >= 2) {
+    return dividePartIntoConnectedComponents(targetMesh, false);
+  } else {
+    const res = bisectMeshIntoTwoPieces(targetMesh);
+    return res ? true : false;
+  }
+}
+
+function cutOrDivideBrushedParts() {
+  resetExplosionToRest();
+
+  const activeMeshes = Array.from(selectedMeshFaces.keys()).filter(m => selectedMeshFaces.get(m).size > 0);
+  const checkedList = Array.from(checkedParts);
+
+  if (activeMeshes.length === 0 && checkedList.length === 0) {
+    if (selectedPartMesh) {
+      checkedList.push(selectedPartMesh);
+    } else {
+      showToast('⚠️ Please brush areas on the model or select parts to separate them!', 'warning');
+      return;
+    }
+  }
+
+  saveStateToUndoStack('Separate / Split part(s)');
+
+  let createdCount = 0;
+  const newlyCreatedMeshes = [];
+
+  // 1. Separate brushed faces from each mesh
+  if (activeMeshes.length > 0) {
+    activeMeshes.forEach(parentMesh => {
+      const faceSet = selectedMeshFaces.get(parentMesh);
+      if (!faceSet || faceSet.size === 0) return;
+
+      const srcGeo = parentMesh.geometry;
+      const isIndexed = srcGeo.index !== null;
+      const totalFaces = isIndexed ? (srcGeo.index.count / 3) : (srcGeo.attributes.position.count / 3);
+      const parentInfo = partsData.get(parentMesh);
+      const parentName = parentInfo ? parentInfo.name : 'part';
+      const parentObj = parentMesh.parent || currentLoadedMesh || scene;
+
+      const { selectedGeo, remainingGeo } = partitionGeometry(srcGeo, faceSet);
+
+      // Check if selected faces form multiple disconnected components (e.g. 2 separate legs or disjoint areas)
+      let selectedComponents = getConnectedComponents(selectedGeo);
+      if (!selectedComponents || selectedComponents.length === 0) {
+        selectedComponents = [Array.from({ length: faceSet.size }, (_, i) => i)];
+      }
+
+      // For EACH connected component in the selected region:
+      // Separate it as an independent part with its own DISTINCT VIBRANT COLOR!
+      selectedComponents.forEach((compFaces, cIdx) => {
+        let pieceGeo = selectedComponents.length === 1
+          ? selectedGeo
+          : extractSubGeometry(selectedGeo, compFaces);
+
+        const newColor = getNextDistinctPaletteColor();
+        const newMat = new THREE.MeshStandardMaterial({
+          color: newColor,
+          roughness: 0.35,
+          metalness: 0.05,
+          emissive: newColor,
+          emissiveIntensity: 0.15,
+          side: THREE.DoubleSide
+        });
+
+        const nextIdx = partsData.size;
+        const compSuffix = selectedComponents.length > 1 ? `_piece_${cIdx + 1}` : `_sep_${nextIdx + 1}`;
+        const newName = `${parentName}${compSuffix}`;
+        const newMesh = new THREE.Mesh(pieceGeo, newMat);
+        newMesh.name = newName;
+
+        newMesh.position.copy(parentMesh.position);
+        newMesh.quaternion.copy(parentMesh.quaternion);
+        newMesh.scale.copy(parentMesh.scale);
+
+        parentObj.add(newMesh);
+
+        newMesh.updateMatrixWorld(true);
+        const nBox = new THREE.Box3().setFromObject(newMesh);
+        const nCenter = new THREE.Vector3();
+        nBox.getCenter(nCenter);
+        const nDir = nCenter.clone().sub(globalCenter);
+        if (nDir.length() < 1e-4) nDir.set(0, 1, 0);
+        nDir.normalize();
+
+        const newInfo = {
+          mesh: newMesh,
+          index: nextIdx,
+          name: newName,
+          originalLocalPosition: newMesh.position.clone(),
+          originalRotation: newMesh.quaternion.clone(),
+          originalScale: newMesh.scale.clone(),
+          explodeDirection: nDir,
+          distanceWeight: 1.0,
+          geometryCenterOffset: nCenter.clone(),
+          accumulatedRotation: 0,
+          rotationAxis: new THREE.Vector3(1, 0, 0),
+          rotationSpeedFactor: 1.0,
+          snapshotRotation: 0,
+          customOffset: new THREE.Vector3(),
+          customRotation: new THREE.Euler(),
+          customScale: 1.0,
+          visible: true
+        };
+
+        partsData.set(newMesh, newInfo);
+        paletteMaterials.set(newMesh, newMat);
+        originalMaterials.set(newMesh, cloneMaterialSafe(newMat));
+        newlyCreatedMeshes.push(newMesh);
+        createdCount++;
+      });
+
+      // Handle the parent mesh
+      if (faceSet.size >= totalFaces) {
+        // All faces were separated out, remove parent mesh
+        parentObj.remove(parentMesh);
+        partsData.delete(parentMesh);
+        paletteMaterials.delete(parentMesh);
+        originalMaterials.delete(parentMesh);
+        srcGeo.dispose();
+      } else {
+        // Parent mesh keeps remaining faces and PRESERVES its original color!
+        parentMesh.geometry.dispose();
+        parentMesh.geometry = remainingGeo;
+        parentMesh.geometry.computeBoundingBox();
+        parentMesh.geometry.computeBoundingSphere();
+        parentMesh.updateMatrixWorld(true);
+
+        if (parentInfo) {
+          const pBox = new THREE.Box3().setFromObject(parentMesh);
+          const pCenter = new THREE.Vector3();
+          pBox.getCenter(pCenter);
+          parentInfo.geometryCenterOffset.copy(pCenter);
+          const pDir = pCenter.clone().sub(globalCenter);
+          if (pDir.length() < 1e-4) pDir.set(0, 1, 0);
+          parentInfo.explodeDirection.copy(pDir.normalize());
+        }
+      }
+    });
+  }
+
+  // 2. If no faces brushed but parts were checked in hierarchy list:
+  if (activeMeshes.length === 0 && checkedList.length > 0) {
+    checkedList.forEach(targetMesh => {
+      if (!targetMesh || !targetMesh.geometry || !partsData.has(targetMesh)) return;
+      const didDivide = dividePartIntoIndependentPieces(targetMesh);
+      if (didDivide) createdCount++;
+    });
+  }
+
   clearBrushSelection();
+  checkedParts.clear();
+  updateBulkActionBar();
   rebuildPartsHierarchyUI();
+
   if (newlyCreatedMeshes.length > 0) {
     selectPart(newlyCreatedMeshes[0]);
   }
@@ -2411,8 +2656,8 @@ function cutOrDivideBrushedParts() {
     updateMeshStatsDisplay(calculateGeometryStats(currentLoadedMesh));
   }
 
-  stageOperation(`Separated / cut into ${newlyCreatedMeshes.length} new part(s)`);
-  showToast(`✂️ Successfully cut part(s) into separate pieces with <strong>different vibrant colors</strong>!`, 'success');
+  stageOperation(`Separated into ${createdCount} new part(s)`);
+  showToast(`✂️ Successfully separated selected parts into <strong>${createdCount} independent parts</strong>, each with a <strong>different vibrant color</strong>!`, 'success');
 }
 
 if (brushCutBtn) brushCutBtn.onclick = () => cutOrDivideBrushedParts();
@@ -2466,6 +2711,7 @@ function dividePartIntoConnectedComponents(targetMesh, showInfoIfSingle = true) 
 
     parentObj.add(compMesh);
 
+    compMesh.updateMatrixWorld(true);
     const cBox = new THREE.Box3().setFromObject(compMesh);
     const cCenter = new THREE.Vector3();
     cBox.getCenter(cCenter);
@@ -2527,23 +2773,33 @@ function getModelIntersects(e, restrictMesh = null) {
   brushMouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
   brushRaycaster.setFromCamera(brushMouse, (isOrtho && orthoCamera) ? orthoCamera : camera);
 
-  if (!currentLoadedMesh) return [];
-
   if (restrictMesh) {
-    return brushRaycaster.intersectObject(restrictMesh, true);
+    restrictMesh.updateMatrixWorld(true);
+    return brushRaycaster.intersectObject(restrictMesh, false);
   }
 
   const meshes = [];
-  const overlayValues = Array.from(brushOverlayMeshes.values());
-  currentLoadedMesh.traverse((child) => {
-    if (child.isMesh && child.visible && child !== brushHelper && !overlayValues.includes(child)) {
-      meshes.push(child);
+  partsData.forEach((info, m) => {
+    if (m && m.isMesh && m.visible && !m.isBrushOverlay && m !== brushHelper) {
+      m.updateMatrixWorld(true);
+      meshes.push(m);
     }
   });
-  return brushRaycaster.intersectObjects(meshes, true);
+
+  if (meshes.length === 0 && currentLoadedMesh) {
+    currentLoadedMesh.traverse((child) => {
+      if (child.isMesh && child.visible && !child.isBrushOverlay && child !== brushHelper) {
+        child.updateMatrixWorld(true);
+        meshes.push(child);
+      }
+    });
+  }
+
+  const rawHits = brushRaycaster.intersectObjects(meshes, false);
+  return rawHits.filter(h => h.object && !h.object.isBrushOverlay && h.object !== brushHelper);
 }
 
-renderer.domElement.addEventListener('pointerdown', (e) => {
+function handleBrushDown(e) {
   if (!isBrushActive || e.button !== 0) return;
   const hits = getModelIntersects(e, (brushScope === 'part' && brushLockedMesh) ? brushLockedMesh : null);
   if (hits.length > 0) {
@@ -2558,50 +2814,63 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
       }
     }
 
+    const hitNorm = (hit.face && hit.face.normal) ? hit.face.normal : new THREE.Vector3(0, 1, 0);
+
     if (brushMode === 'flood') {
       floodFillSemanticFeature(hitMesh, hit.faceIndex);
     } else if (brushMode === 'semantic') {
-      paintFacesOnMesh(hitMesh, hit.point, hit.face ? hit.face.normal : null);
+      paintFacesOnMesh(hitMesh, hit.point, hitNorm);
       detectAndSelectGlobalSemanticFeatures();
     } else {
       isBrushing = true;
       controls.enabled = false;
-      paintFacesOnMesh(hitMesh, hit.point, hit.face ? hit.face.normal : null);
+      paintFacesOnMesh(hitMesh, hit.point, hitNorm);
     }
   }
-});
+}
 
-renderer.domElement.addEventListener('pointermove', (e) => {
+function handleBrushMove(e) {
   if (!isBrushActive) return;
 
   const surfaceHits = getModelIntersects(e, (brushScope === 'part' && brushLockedMesh) ? brushLockedMesh : null);
   if (surfaceHits.length > 0) {
     const hit = surfaceHits[0];
+    const hitNorm = (hit.face && hit.face.normal) ? hit.face.normal : new THREE.Vector3(0, 1, 0);
+
     brushHelper.visible = true;
-    brushHelper.position.copy(hit.point).addScaledVector(hit.face.normal, 0.003);
-    brushHelper.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), hit.face.normal);
+    brushHelper.position.copy(hit.point).addScaledVector(hitNorm, 0.003);
+    brushHelper.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), hitNorm);
 
     if (isBrushing && brushMode === 'paint') {
       if (brushScope === 'part') {
         if (hit.object === brushLockedMesh) {
-          paintFacesOnMesh(brushLockedMesh, hit.point, hit.face ? hit.face.normal : null);
+          paintFacesOnMesh(brushLockedMesh, hit.point, hitNorm);
         }
       } else {
         // Multi-Region / All Parts: paints any mesh hit without restrictions!
-        paintFacesOnMesh(hit.object, hit.point, hit.face ? hit.face.normal : null);
+        paintFacesOnMesh(hit.object, hit.point, hitNorm);
       }
     }
   } else {
     brushHelper.visible = false;
   }
-});
+}
 
-window.addEventListener('pointerup', () => {
+function handleBrushUp() {
   if (isBrushing) {
     isBrushing = false;
     controls.enabled = true;
   }
-});
+}
+
+renderer.domElement.addEventListener('pointerdown', handleBrushDown);
+renderer.domElement.addEventListener('mousedown', handleBrushDown);
+
+renderer.domElement.addEventListener('pointermove', handleBrushMove);
+renderer.domElement.addEventListener('mousemove', handleBrushMove);
+
+window.addEventListener('pointerup', handleBrushUp);
+window.addEventListener('mouseup', handleBrushUp);
 
 // --- PARTS DROPDOWN TOGGLE & GLOBAL CLICK-OUTSIDE ---
 const partsDropdownToggle = document.getElementById('parts-dropdown-toggle');
