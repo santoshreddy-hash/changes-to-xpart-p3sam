@@ -18,7 +18,7 @@ print(f"Mesh loaded: {len(mesh.faces):,} faces")
 
 am = mod.AutoMask(ckpt_path=None)
 
-prompt_bs = int(os.environ.get("P3SAM_PROMPT_BS", sys.argv[3] if len(sys.argv) > 3 else "32"))
+prompt_bs = int(os.environ.get("P3SAM_PROMPT_BS", sys.argv[3] if len(sys.argv) > 3 else "8"))
 print(f"Running P3-SAM with prompt_bs = {prompt_bs}")
 
 torch.cuda.synchronize()
@@ -35,8 +35,16 @@ with torch.autocast("cuda", dtype=torch.bfloat16):
 torch.cuda.synchronize()
 elapsed = time.perf_counter() - t0
 valid_parts = len(np.unique(face_ids[face_ids >= 0])) if np.any(face_ids >= 0) else len(np.unique(face_ids))
+print(f"P3-SAM completed in {elapsed:.2f}s! Found {valid_parts} valid parts.")
+
 np.save(out_aabb, aabb)
 print(f"Saved aabb to {out_aabb}")
+
+out_face_ids = os.path.join(out_dir, f"{basename}_face_ids.npy")
+np.save(out_face_ids, face_ids)
+np.save(os.path.join(out_dir, "auto_mask_mesh_final_post_face_ids.npy"), face_ids)
+print(f"Saved face_ids to {out_face_ids}")
+
 mesh_out_glb = os.path.join(out_dir, "p3sam_cleaned_mesh.glb")
 mesh_out.export(mesh_out_glb)
 print(f"Saved cleaned mesh to {mesh_out_glb}")

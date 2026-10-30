@@ -1663,6 +1663,15 @@ if __name__ == '__main__':
                                                         cleanup_mode=args.cleanup_mode,)
         valid_parts = len(np.unique(face_ids[face_ids >= 0])) if np.any(face_ids >= 0) else len(np.unique(face_ids))
         print(f"Segmentation complete! Found {valid_parts} parts, aabb shape: {aabb.shape}")
+        
+        # Save standard companion outputs for downstream pipelines (X-Part / Tripo3D)
+        mesh_stem = Path(mesh_path).stem
+        np.save(os.path.join(output_path, f"{mesh_stem}_aabb.npy"), aabb)
+        np.save(os.path.join(output_path, "auto_mask_mesh_final_post_aabb.npy"), aabb)
+        np.save(os.path.join(output_path, f"{mesh_stem}_face_ids.npy"), face_ids)
+        np.save(os.path.join(output_path, "auto_mask_mesh_final_post_face_ids.npy"), face_ids)
+        mesh.export(os.path.join(output_path, "p3sam_cleaned_mesh.glb"))
+        
         if args.save_face_ids:
             np.save(args.save_face_ids, face_ids)
             print(f"saved face_ids to {args.save_face_ids}, unique parts: {len(np.unique(face_ids))}")

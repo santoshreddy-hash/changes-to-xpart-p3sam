@@ -172,25 +172,35 @@ def run_pipeline_sync(job_id, mesh_path, params):
             jobs[job_id]["stage"] = "Step 1/3: Running P3-SAM 3D feature and bounding-box estimation..."
             jobs[job_id]["progress"] = 25
             
-            p3sam_script = ROOT_DIR / "P3-SAM" / "demo" / "run_p3sam_for_xpart.py"
+            p3sam_script = ROOT_DIR / "P3-SAM" / "demo" / "auto_mask_fast.py"
             p3sam_out_dir = out_job_dir / "p3sam"
             p3sam_out_dir.mkdir(parents=True, exist_ok=True)
             
             cmd_p3sam = [
-                PYTHON_EXE, str(p3sam_script),
-                str(mesh_p), str(p3sam_out_dir), "32"
+                PYTHON_EXE, "-u", str(p3sam_script),
+                "--mesh_path", str(mesh_p),
+                "--output_path", str(p3sam_out_dir),
+                "--parallel", "0",
+                "--post_process", "1",
+                "--prompt_bs", "8",
+                "--save_only_glbs", "1",
+                "--save_face_ids", str(p3sam_out_dir / f"{stem}_face_ids.npy")
             ]
             env = os.environ.copy()
             env["TEMP"] = "C:\\Users\\7950x_RTX4090\\AppData\\Local\\Temp"
             env["TMP"] = "C:\\Users\\7950x_RTX4090\\AppData\\Local\\Temp"
             env["PYTHONIOENCODING"] = "utf-8"
             env["PYTHONUTF8"] = "1"
-            env["P3SAM_PROMPT_BS"] = "32"
+            env["P3SAM_PROMPT_BS"] = "8"
             
             res_p3 = subprocess.run(cmd_p3sam, cwd=str(ROOT_DIR), env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
             step1_time = time.perf_counter() - t1_s
             jobs[job_id]["timings"]["step1"] = round(step1_time, 2)
             aabb_npy = p3sam_out_dir / f"{stem}_aabb.npy"
+            if not aabb_npy.exists():
+                alt_aabb = p3sam_out_dir / "auto_mask_mesh_final_post_aabb.npy"
+                if alt_aabb.exists():
+                    aabb_npy = alt_aabb
             
             # Check for face_ids from P3-SAM
             face_ids_cands = list(p3sam_out_dir.glob("*face_ids.npy"))
