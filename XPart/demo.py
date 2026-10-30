@@ -176,14 +176,7 @@ if __name__ == "__main__":
     ), "ckpt or ckpt_path must be specified in config"
     ckpt_path = Path(args.ckpt if args.ckpt else config.ckpt_path)
     ignore_keys = config.get("ignore_keys", [])
-    save_dir = (
-        Path(args.save_dir)
-        / ckpt_path.parent.parent.relative_to(
-            ckpt_path.parent.parent.parent.parent.parent
-        )
-        # / ckpt_path.stem
-    )
-    print(save_dir)
+    save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
     main(
         ckpt_path=ckpt_path,

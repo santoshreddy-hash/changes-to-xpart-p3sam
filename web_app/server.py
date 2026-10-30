@@ -4,11 +4,15 @@ import json
 import time
 import uuid
 import asyncio
+import threading
 import subprocess
 import numpy as np
 import trimesh
 from pathlib import Path
 from aiohttp import web
+
+# Global GPU pipeline lock to prevent multiple concurrent PyTorch jobs from thrashing VRAM
+pipeline_lock = threading.Lock()
 
 @web.middleware
 async def cors_middleware(request, handler):
@@ -112,6 +116,8 @@ async def upload_file(request):
 
 def run_pipeline_sync(job_id, mesh_path, params):
     """Runs the segmentation pipeline and Tripo conversion in a worker thread."""
+    jobs[job_id]["stage"] = "Queued for GPU resources..."
+    pipeline_lock.acquire()
     try:
         t_total_start = time.perf_counter()
         jobs[job_id]["status"] = "running"
@@ -172,13 +178,14 @@ def run_pipeline_sync(job_id, mesh_path, params):
             
             cmd_p3sam = [
                 PYTHON_EXE, str(p3sam_script),
-                str(mesh_p), str(p3sam_out_dir), "4"
+                str(mesh_p), str(p3sam_out_dir), "32"
             ]
             env = os.environ.copy()
             env["TEMP"] = "C:\\Users\\7950x_RTX4090\\AppData\\Local\\Temp"
             env["TMP"] = "C:\\Users\\7950x_RTX4090\\AppData\\Local\\Temp"
             env["PYTHONIOENCODING"] = "utf-8"
             env["PYTHONUTF8"] = "1"
+            env["P3SAM_PROMPT_BS"] = "32"
             
             res_p3 = subprocess.run(cmd_p3sam, cwd=str(ROOT_DIR), env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
             step1_time = time.perf_counter() - t1_s
@@ -393,6 +400,8 @@ def run_pipeline_sync(job_id, mesh_path, params):
         traceback.print_exc()
         jobs[job_id]["status"] = "error"
         jobs[job_id]["error"] = str(e)
+    finally:
+        pipeline_lock.release()
 
 
 async def start_segmentation(request):
