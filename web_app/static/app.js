@@ -2075,8 +2075,9 @@ function extractSubGeometry(sourceGeo, faceList) {
 
       if (color && selCol) {
         const cBase = sIdx * 3 * color.itemSize + v * color.itemSize;
+        const viBase = vi * color.itemSize;
         for (let c = 0; c < color.itemSize; c++) {
-          selCol[cBase + c] = color.getComponent(vi, c);
+          selCol[cBase + c] = color.array[viBase + c];
         }
       }
     }
@@ -2086,7 +2087,7 @@ function extractSubGeometry(sourceGeo, faceList) {
   subGeo.setAttribute('position', new THREE.BufferAttribute(selPos, 3));
   if (selNorm) subGeo.setAttribute('normal', new THREE.BufferAttribute(selNorm, 3));
   if (selUv) subGeo.setAttribute('uv', new THREE.BufferAttribute(selUv, 2));
-  if (selCol) subGeo.setAttribute('color', new THREE.BufferAttribute(selCol, color.itemSize));
+  if (selCol) subGeo.setAttribute('color', new THREE.BufferAttribute(selCol, color.itemSize, color.normalized));
 
   if (!selNorm) subGeo.computeVertexNormals();
   subGeo.computeBoundingBox();
@@ -2157,8 +2158,9 @@ function partitionGeometry(sourceGeo, selectedSet) {
 
       if (color && targetCol) {
         const cBase = offset * 3 * color.itemSize + v * color.itemSize;
+        const viBase = vi * color.itemSize;
         for (let c = 0; c < color.itemSize; c++) {
-          targetCol[cBase + c] = color.getComponent(vi, c);
+          targetCol[cBase + c] = color.array[viBase + c];
         }
       }
     }
@@ -2171,13 +2173,13 @@ function partitionGeometry(sourceGeo, selectedSet) {
   selectedGeo.setAttribute('position', new THREE.BufferAttribute(selPos, 3));
   if (selNorm) selectedGeo.setAttribute('normal', new THREE.BufferAttribute(selNorm, 3));
   if (selUv) selectedGeo.setAttribute('uv', new THREE.BufferAttribute(selUv, 2));
-  if (selCol) selectedGeo.setAttribute('color', new THREE.BufferAttribute(selCol, color.itemSize));
+  if (selCol) selectedGeo.setAttribute('color', new THREE.BufferAttribute(selCol, color.itemSize, color.normalized));
 
   const remainingGeo = new THREE.BufferGeometry();
   remainingGeo.setAttribute('position', new THREE.BufferAttribute(remPos, 3));
   if (remNorm) remainingGeo.setAttribute('normal', new THREE.BufferAttribute(remNorm, 3));
   if (remUv) remainingGeo.setAttribute('uv', new THREE.BufferAttribute(remUv, 2));
-  if (remCol) remainingGeo.setAttribute('color', new THREE.BufferAttribute(remCol, color.itemSize));
+  if (remCol) remainingGeo.setAttribute('color', new THREE.BufferAttribute(remCol, color.itemSize, color.normalized));
 
   if (!selNorm) selectedGeo.computeVertexNormals();
   if (!remNorm) remainingGeo.computeVertexNormals();
@@ -2615,21 +2617,92 @@ function cutOrDivideBrushedParts() {
         originalMaterials.delete(parentMesh);
         srcGeo.dispose();
       } else {
-        // Parent mesh keeps remaining faces and PRESERVES its original color!
-        parentMesh.geometry.dispose();
-        parentMesh.geometry = remainingGeo;
-        parentMesh.geometry.computeBoundingBox();
-        parentMesh.geometry.computeBoundingSphere();
-        parentMesh.updateMatrixWorld(true);
+        // Check if removing brushed faces severed parent mesh into disconnected components:
+        const remComponents = getConnectedComponents(remainingGeo);
+        if (remComponents && remComponents.length >= 2) {
+          parentObj.remove(parentMesh);
+          partsData.delete(parentMesh);
+          paletteMaterials.delete(parentMesh);
+          originalMaterials.delete(parentMesh);
 
-        if (parentInfo) {
-          const pBox = new THREE.Box3().setFromObject(parentMesh);
-          const pCenter = new THREE.Vector3();
-          pBox.getCenter(pCenter);
-          parentInfo.geometryCenterOffset.copy(pCenter);
-          const pDir = pCenter.clone().sub(globalCenter);
-          if (pDir.length() < 1e-4) pDir.set(0, 1, 0);
-          parentInfo.explodeDirection.copy(pDir.normalize());
+          remComponents.forEach((rFaces, rIdx) => {
+            const rGeo = extractSubGeometry(remainingGeo, rFaces);
+            const rColor = (rIdx === 0 && parentMesh.material && parentMesh.material.color)
+              ? '#' + (Array.isArray(parentMesh.material) ? parentMesh.material[0].color : parentMesh.material.color).getHexString()
+              : getNextDistinctPaletteColor();
+
+            const rMat = new THREE.MeshStandardMaterial({
+              color: rColor,
+              roughness: 0.35,
+              metalness: 0.05,
+              emissive: rColor,
+              emissiveIntensity: 0.15,
+              side: THREE.DoubleSide
+            });
+
+            const nextIdx = partsData.size;
+            const rName = `${parentName}_rem_${rIdx + 1}`;
+            const rMesh = new THREE.Mesh(rGeo, rMat);
+            rMesh.name = rName;
+            rMesh.position.copy(parentMesh.position);
+            rMesh.quaternion.copy(parentMesh.quaternion);
+            rMesh.scale.copy(parentMesh.scale);
+            parentObj.add(rMesh);
+            rMesh.updateMatrixWorld(true);
+
+            const rBox = new THREE.Box3().setFromObject(rMesh);
+            const rCenter = new THREE.Vector3();
+            rBox.getCenter(rCenter);
+            const rDir = rCenter.clone().sub(globalCenter);
+            if (rDir.length() < 1e-4) rDir.set(0, 1, 0);
+            rDir.normalize();
+
+            const rInfo = {
+              mesh: rMesh,
+              index: nextIdx,
+              name: rName,
+              originalLocalPosition: rMesh.position.clone(),
+              originalRotation: rMesh.quaternion.clone(),
+              originalScale: rMesh.scale.clone(),
+              explodeDirection: rDir,
+              distanceWeight: 1.0,
+              geometryCenterOffset: rCenter.clone(),
+              accumulatedRotation: 0,
+              rotationAxis: new THREE.Vector3(1, 0, 0),
+              rotationSpeedFactor: 1.0,
+              snapshotRotation: 0,
+              customOffset: new THREE.Vector3(),
+              customRotation: new THREE.Euler(),
+              customScale: 1.0,
+              visible: true
+            };
+
+            partsData.set(rMesh, rInfo);
+            paletteMaterials.set(rMesh, rMat);
+            originalMaterials.set(rMesh, cloneMaterialSafe(rMat));
+            newlyCreatedMeshes.push(rMesh);
+            createdCount++;
+          });
+
+          srcGeo.dispose();
+          remainingGeo.dispose();
+        } else {
+          // Parent mesh keeps remaining faces and PRESERVES its original color!
+          parentMesh.geometry.dispose();
+          parentMesh.geometry = remainingGeo;
+          parentMesh.geometry.computeBoundingBox();
+          parentMesh.geometry.computeBoundingSphere();
+          parentMesh.updateMatrixWorld(true);
+
+          if (parentInfo) {
+            const pBox = new THREE.Box3().setFromObject(parentMesh);
+            const pCenter = new THREE.Vector3();
+            pBox.getCenter(pCenter);
+            parentInfo.geometryCenterOffset.copy(pCenter);
+            const pDir = pCenter.clone().sub(globalCenter);
+            if (pDir.length() < 1e-4) pDir.set(0, 1, 0);
+            parentInfo.explodeDirection.copy(pDir.normalize());
+          }
         }
       }
     });
