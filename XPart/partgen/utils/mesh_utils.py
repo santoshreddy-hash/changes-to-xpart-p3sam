@@ -289,83 +289,889 @@ def sample_surface_inbbox(
     return surface, torch.tensor(valid_index)
 
 
-def explode_mesh(mesh, explosion_scale=0.4):
+TRIPO_PALETTE = np.array([
+    [29, 57, 166, 255],   # Royal Blue
+    [20, 221, 228, 255],  # Cyan / Turquoise
+    [245, 166, 35, 255],  # Amber / Gold
+    [228, 64, 95, 255],   # Magenta / Coral
+    [32, 165, 48, 255],   # Emerald Green
+    [155, 81, 224, 255],  # Deep Purple
+    [242, 120, 75, 255],  # Warm Orange
+    [64, 158, 255, 255],  # Sky Blue
+    [255, 99, 132, 255],  # Pastel Pink
+    [75, 192, 192, 255],  # Teal
+    [255, 205, 86, 255],  # Sun Yellow
+    [153, 102, 255, 255], # Violet
+    [54, 162, 235, 255],  # Cobalt
+    [255, 159, 64, 255],  # Tangerine
+    [46, 204, 113, 255],  # Mint Green
+    [231, 76, 60, 255],   # Ruby Red
+    [52, 152, 219, 255],  # Cerulean
+    [241, 196, 15, 255],  # Bright Gold
+    [155, 89, 182, 255],  # Amethyst
+    [26, 188, 156, 255],  # Aqua
+    [230, 126, 34, 255],  # Carrot Orange
+    [149, 165, 166, 255], # Silver
+    [52, 73, 94, 255],    # Navy Slate
+    [192, 57, 43, 255],   # Pomegranate
+    [39, 174, 96, 255],   # Jade
+    [142, 68, 173, 255],  # Plum
+    [41, 128, 185, 255],  # Ocean Blue
+    [211, 84, 0, 255],    # Rust
+    [127, 140, 141, 255], # Cool Gray
+    [22, 160, 133, 255],  # Dark Cyan
+    [243, 156, 18, 255],  # Orange Yellow
+    [189, 195, 199, 255], # Light Platinum
+], dtype=np.uint8)
 
-    if isinstance(mesh, trimesh.Scene):
-        scene = mesh
+
+def create_tripo_assembly_scene(part_meshes, names=None, colors=None):
+    """
+    Constructs a Tripo3D-compatible multi-node trimesh.Scene.
+    Every part submesh is normalized so its local vertex coordinates are centered
+    around [0, 0, 0], and its world position is encoded as a Node translation
+    transform matrix T_i = C_i.
+    """
+    assembly = trimesh.Scene()
+    valid_parts = [p for p in part_meshes if p is not None and hasattr(p, "vertices") and len(p.vertices) > 0]
+    for i, p in enumerate(valid_parts):
+        node_name = names[i] if (names is not None and i < len(names)) else f"tripo_part_{i}"
+        color = colors[i] if (colors is not None and i < len(colors)) else TRIPO_PALETTE[i % len(TRIPO_PALETTE)]
+        
+        # Compute geometric centroid (bbox center) in world space
+        center = (p.bounds[0] + p.bounds[1]) / 2.0
+        
+        # Local-center the vertices
+        p_local = p.copy()
+        p_local.vertices = p_local.vertices - center
+        
+        # Assign distinct vibrant face colors
+        p_local.visual.face_colors = color
+        
+        # Set node transformation matrix with translation = center
+        transform = np.eye(4, dtype=np.float64)
+        transform[:3, 3] = center
+        
+        assembly.add_geometry(p_local, geom_name=node_name, node_name=node_name, transform=transform)
+    return assembly
+
+
+def convert_gltf_matrix_to_translation(glb_bytes: bytes) -> bytes:
+    """
+    Post-processes exported GLB binary to convert node matrix transforms into
+    clean explicit GLTF translation: [x, y, z] vectors, matching Tripo3D.
+    """
+    import struct, json
+    if len(glb_bytes) < 20:
+        return glb_bytes
+    magic, version, length = struct.unpack('<4sII', glb_bytes[:12])
+    if magic != b'glTF':
+        return glb_bytes
+    chunk0_len, chunk0_type = struct.unpack('<II', glb_bytes[12:20])
+    chunk0_data = glb_bytes[20:20 + chunk0_len]
+    chunk1_data = glb_bytes[20 + chunk0_len:]
+    
+    try:
+        gltf = json.loads(chunk0_data.decode('utf-8'))
+        for node in gltf.get('nodes', []):
+            if 'matrix' in node and node['matrix'] is not None:
+                m = node['matrix']
+                # Check for pure translation matrix (identity rotation and scale)
+                is_pure_trans = (
+                    abs(m[0] - 1.0) < 1e-5 and abs(m[5] - 1.0) < 1e-5 and 
+                    abs(m[10] - 1.0) < 1e-5 and abs(m[15] - 1.0) < 1e-5 and
+                    abs(m[1]) < 1e-5 and abs(m[2]) < 1e-5 and abs(m[3]) < 1e-5 and
+                    abs(m[4]) < 1e-5 and abs(m[6]) < 1e-5 and abs(m[7]) < 1e-5 and
+                    abs(m[8]) < 1e-5 and abs(m[9]) < 1e-5 and abs(m[11]) < 1e-5
+                )
+                if is_pure_trans:
+                    node['translation'] = [round(float(m[12]), 7), round(float(m[13]), 7), round(float(m[14]), 7)]
+                    del node['matrix']
+        
+        new_json_bytes = json.dumps(gltf, separators=(',', ':')).encode('utf-8')
+        pad = (4 - (len(new_json_bytes) % 4)) % 4
+        new_json_bytes += b' ' * pad
+        new_total_len = 12 + 8 + len(new_json_bytes) + len(chunk1_data)
+        
+        header = struct.pack('<4sII', magic, version, new_total_len)
+        chunk0_header = struct.pack('<II', len(new_json_bytes), chunk0_type)
+        return header + chunk0_header + new_json_bytes + chunk1_data
+    except Exception:
+        return glb_bytes
+
+
+def export_tripo_assembly_glb(scene_or_parts, filepath, names=None, colors=None):
+    """
+    Exports a segmented model as a Tripo3D-compatible multi-node GLB assembly.
+    """
+    from pathlib import Path
+    filepath = Path(filepath)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    
+    if isinstance(scene_or_parts, trimesh.Scene):
+        assembly_scene = scene_or_parts
+    elif isinstance(scene_or_parts, (list, tuple)):
+        assembly_scene = create_tripo_assembly_scene(scene_or_parts, names=names, colors=colors)
+    else:
+        assembly_scene = trimesh.Scene(scene_or_parts)
+    
+    glb_data = assembly_scene.export(file_type="glb")
+    cleaned_glb = convert_gltf_matrix_to_translation(glb_data)
+    with open(filepath, "wb") as f:
+        f.write(cleaned_glb)
+    print(f"[TRIPO_EXPORT] Saved multi-node assembly GLB to {filepath}")
+    return filepath
+
+
+def explode_mesh_tripo(mesh, explosion_scale=0.4, progress=1.0, easing=True):
+    """
+    Applies Tripo3D's exact explosion mechanics (reverse-engineered from CRvlez9U.js).
+    - Union bounding box center C_global and maximum distance E
+    - Normalized distance weight: w_i = ||C_i - C_global|| / E
+    - Staggered local timing wave: tau_i = clamp((progress - (1 - w_i) * 0.10) / 0.60, 0, 1)
+    - Overshoot cubic polynomial: x(tau_i) = 1 + 2.2*(tau_i - 1)^3 + 1.2*(tau_i - 1)^2
+    - Distance-scaled displacement: Delta_i = x(tau_i) * E * (0.35 + 0.65 * min(1, w_i)) * explosion_scale * d_i
+    """
+    if isinstance(mesh, (list, tuple)):
+        scene = create_tripo_assembly_scene(mesh)
+    elif isinstance(mesh, trimesh.Scene):
+        scene = mesh.copy()
     elif isinstance(mesh, trimesh.Trimesh):
         print("Warning: Single mesh provided, can't create exploded view")
-        scene = trimesh.Scene(mesh)
-        return scene
+        return trimesh.Scene(mesh)
     else:
-        print(f"Warning: Unexpected mesh type: {type(mesh)}")
-        scene = mesh
+        scene = trimesh.Scene(mesh)
 
     if len(scene.geometry) <= 1:
-        print("Only one geometry found - nothing to explode")
         return scene
 
-    print(f"[EXPLODE_MESH] Starting mesh explosion with scale {explosion_scale}")
-    print(f"[EXPLODE_MESH] Processing {len(scene.geometry)} parts")
-
-    exploded_scene = trimesh.Scene()
-
+    part_nodes = []
     part_centers = []
-    geometry_names = []
-
-    for geometry_name, geometry in scene.geometry.items():
-        if hasattr(geometry, "vertices"):
-            transform = scene.graph[geometry_name][0]
-            vertices_global = trimesh.transformations.transform_points(
-                geometry.vertices, transform
-            )
-            center = np.mean(vertices_global, axis=0)
+    
+    # Collect world centroids for all geometries
+    for geom_name in scene.geometry.keys():
+        transform = scene.graph[geom_name][0]
+        geom = scene.geometry[geom_name]
+        if hasattr(geom, "vertices") and len(geom.vertices) > 0:
+            world_verts = trimesh.transformations.transform_points(geom.vertices, transform)
+            center = (world_verts.min(axis=0) + world_verts.max(axis=0)) / 2.0
+            part_nodes.append(geom_name)
             part_centers.append(center)
-            geometry_names.append(geometry_name)
-            print(f"[EXPLODE_MESH] Part {geometry_name}: center = {center}")
-
+            
     if not part_centers:
-        print("No valid geometries with vertices found")
         return scene
 
     part_centers = np.array(part_centers)
-    global_center = np.mean(part_centers, axis=0)
+    global_min = np.min(part_centers, axis=0)
+    global_max = np.max(part_centers, axis=0)
+    global_center = (global_min + global_max) / 2.0
 
-    print(f"[EXPLODE_MESH] Global center: {global_center}")
+    # Max distance E from global center
+    distances = np.linalg.norm(part_centers - global_center, axis=1)
+    max_distance = np.max(distances)
+    if max_distance < 1e-6:
+        max_distance = 1.0
 
-    for i, (geometry_name, geometry) in enumerate(scene.geometry.items()):
-        if hasattr(geometry, "vertices"):
-            if i < len(part_centers):
-                part_center = part_centers[i]
-                direction = part_center - global_center
+    exploded_scene = trimesh.Scene()
+    
+    for i, geom_name in enumerate(part_nodes):
+        geom = scene.geometry[geom_name]
+        c = part_centers[i]
+        l_vec = c - global_center
+        u = np.linalg.norm(l_vec)
+        
+        # Outward unit direction vector (with jitter if at center)
+        if u < 1e-4:
+            d_vec = np.array([1.0, (np.random.rand() - 0.5) * 0.01, (np.random.rand() - 0.5) * 0.01])
+            d_vec = d_vec / np.linalg.norm(d_vec)
+        else:
+            d_vec = l_vec / u
+            
+        w_i = u / max_distance
+        
+        # Staggered local timing: F(w_i, progress)
+        t_local = np.clip((progress - (1.0 - w_i) * 0.10) / 0.60, 0.0, 1.0)
+        
+        # Overshoot cubic polynomial: x(tau) = 1 + 2.2*(tau - 1)^3 + 1.2*(tau - 1)^2
+        if easing:
+            eased_progress = 1.0 + 2.2 * ((t_local - 1.0) ** 3) + 1.2 * ((t_local - 1.0) ** 2)
+        else:
+            eased_progress = t_local
+            
+        # Distance scaling: R(w_i) = E * (0.35 + 0.65 * min(1, w_i)) * explosion_scale
+        r_dist = max_distance * (0.35 + 0.65 * min(1.0, w_i)) * explosion_scale
+        offset = d_vec * (eased_progress * r_dist)
+        
+        # Update node transformation
+        orig_transform = scene.graph[geom_name][0].copy()
+        new_transform = orig_transform.copy()
+        new_transform[:3, 3] = new_transform[:3, 3] + offset
+        
+        exploded_scene.add_geometry(geom, geom_name=geom_name, node_name=geom_name, transform=new_transform)
 
-                direction_norm = np.linalg.norm(direction)
-                if direction_norm > 1e-6:
-                    direction = direction / direction_norm
-                else:
-                    direction = np.random.randn(3)
-                    direction = direction / np.linalg.norm(direction)
-
-                offset = direction * explosion_scale
-            else:
-                offset = np.zeros(3)
-
-            original_transform = scene.graph[geometry_name][0].copy()
-
-            new_transform = original_transform.copy()
-            new_transform[:3, 3] = new_transform[:3, 3] + offset
-
-            exploded_scene.add_geometry(
-                geometry, transform=new_transform, geom_name=geometry_name
-            )
-
-            print(
-                f"[EXPLODE_MESH] Part {geometry_name}: moved by"
-                f" {np.linalg.norm(offset):.4f}"
-            )
-
-    print("[EXPLODE_MESH] Mesh explosion complete")
+    print(f"[TRIPO_EXPLODE] Exploded {len(part_nodes)} parts using Tripo3D exact formulas (scale={explosion_scale}, progress={progress})")
     return exploded_scene
+
+
+# Backward-compatible alias
+explode_mesh = explode_mesh_tripo
+
+
+def generate_tripo_viewer_html(glb_filename: str, output_html_path: str, model_title: str = "3D Segmented & Exploded Model"):
+    """
+    Generates a standalone, production-ready interactive 3D WebGL viewer HTML file
+    implementing Tripo3D's exact explosion state machine and rotation tumbling mechanics.
+    """
+    from pathlib import Path
+    output_html_path = Path(output_html_path)
+    output_html_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{model_title} - Tripo3D Exploded View</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+  <style>
+    :root {{
+      --bg-gradient: radial-gradient(circle at 50% 30%, #1a1e29 0%, #0d0f14 100%);
+      --surface-glass: rgba(22, 27, 34, 0.75);
+      --surface-border: rgba(255, 255, 255, 0.12);
+      --accent-color: #6366f1;
+      --accent-glow: rgba(99, 102, 241, 0.35);
+      --accent-hover: #4f46e5;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+    }}
+    * {{ box-sizing: border-box; margin: 0; padding: 0; user-select: none; }}
+    body {{
+      font-family: 'Outfit', sans-serif;
+      background: var(--bg-gradient);
+      color: var(--text-main);
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+    }}
+    #canvas-container {{
+      width: 100vw;
+      height: 100vh;
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 1;
+    }}
+    /* Top Bar */
+    header {{
+      position: absolute;
+      top: 20px;
+      left: 24px;
+      right: 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      z-index: 10;
+      pointer-events: none;
+    }}
+    .badge-container {{
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      pointer-events: auto;
+      background: var(--surface-glass);
+      backdrop-filter: blur(16px);
+      padding: 10px 18px;
+      border-radius: 14px;
+      border: 1px solid var(--surface-border);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.37);
+    }}
+    .logo-badge {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 30px;
+      height: 30px;
+      background: linear-gradient(135deg, #6366f1, #a855f7);
+      border-radius: 8px;
+      font-weight: 700;
+      font-size: 14px;
+      color: #fff;
+    }}
+    .title-group h1 {{
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }}
+    .title-group p {{
+      font-size: 12px;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+    }}
+
+    /* Control Panel Bottom */
+    .controls-panel {{
+      position: absolute;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      background: var(--surface-glass);
+      backdrop-filter: blur(20px);
+      padding: 12px 24px;
+      border-radius: 20px;
+      border: 1px solid var(--surface-border);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+      z-index: 10;
+    }}
+    .explode-btn {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: #fff;
+      border: none;
+      padding: 10px 22px;
+      font-size: 14px;
+      font-weight: 600;
+      font-family: 'Outfit', sans-serif;
+      border-radius: 12px;
+      cursor: pointer;
+      box-shadow: 0 4px 18px var(--accent-glow);
+      transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }}
+    .explode-btn:hover {{
+      transform: translateY(-2px);
+      box-shadow: 0 6px 24px rgba(99, 102, 241, 0.55);
+    }}
+    .explode-btn.active {{
+      background: linear-gradient(135deg, #ec4899, #f43f5e);
+      box-shadow: 0 4px 18px rgba(244, 63, 94, 0.4);
+    }}
+    .slider-group {{
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }}
+    .slider-group label {{
+      font-size: 13px;
+      color: var(--text-muted);
+      font-weight: 500;
+    }}
+    .slider-group input[type="range"] {{
+      -webkit-appearance: none;
+      width: 140px;
+      height: 6px;
+      background: rgba(255, 255, 255, 0.15);
+      border-radius: 4px;
+      outline: none;
+      cursor: pointer;
+    }}
+    .slider-group input[type="range"]::-webkit-slider-thumb {{
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #818cf8;
+      cursor: pointer;
+      box-shadow: 0 0 10px rgba(129, 140, 248, 0.8);
+      transition: transform 0.15s;
+    }}
+    .slider-group input[type="range"]::-webkit-slider-thumb:hover {{
+      transform: scale(1.2);
+    }}
+
+    /* Parts Drawer Right */
+    .parts-drawer {{
+      position: absolute;
+      top: 80px;
+      right: 24px;
+      width: 250px;
+      max-height: calc(100vh - 180px);
+      background: var(--surface-glass);
+      backdrop-filter: blur(18px);
+      border-radius: 16px;
+      border: 1px solid var(--surface-border);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      z-index: 10;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    }}
+    .parts-header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }}
+    .parts-header h3 {{
+      font-size: 14px;
+      font-weight: 600;
+    }}
+    .parts-count {{
+      font-size: 11px;
+      color: #a855f7;
+      background: rgba(168, 85, 247, 0.15);
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-weight: 600;
+    }}
+    .parts-list {{
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding-right: 4px;
+    }}
+    .parts-list::-webkit-scrollbar {{
+      width: 4px;
+    }}
+    .parts-list::-webkit-scrollbar-thumb {{
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 4px;
+    }}
+    .part-item {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 8px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }}
+    .part-item:hover {{
+      background: rgba(255, 255, 255, 0.08);
+    }}
+    .part-badge {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }}
+    .part-color-dot {{
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }}
+    .loading-overlay {{
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: var(--bg-gradient);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      transition: opacity 0.4s ease;
+    }}
+    .spinner {{
+      width: 44px;
+      height: 44px;
+      border: 3px solid rgba(99, 102, 241, 0.2);
+      border-top-color: #6366f1;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-bottom: 16px;
+    }}
+    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+  </style>
+</head>
+<body>
+  <div id="loading" class="loading-overlay">
+    <div class="spinner"></div>
+    <p style="font-size: 15px; color: var(--text-muted);">Loading 3D Assembly Mesh...</p>
+  </div>
+
+  <header>
+    <div class="badge-container">
+      <div class="logo-badge">3D</div>
+      <div class="title-group">
+        <h1>{model_title}</h1>
+        <p>Tripo3D Matching Explosion Engine</p>
+      </div>
+    </div>
+  </header>
+
+  <div class="parts-drawer">
+    <div class="parts-header">
+      <h3>Parts Hierarchy</h3>
+      <span id="part-count" class="parts-count">0</span>
+    </div>
+    <div id="parts-container" class="parts-list"></div>
+  </div>
+
+  <div class="controls-panel">
+    <button id="explode-toggle" class="explode-btn">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+      </svg>
+      <span id="explode-text">Explode</span>
+    </button>
+    <div class="slider-group">
+      <label>Displacement:</label>
+      <input type="range" id="explode-slider" min="0" max="1" step="0.005" value="0">
+    </div>
+  </div>
+
+  <div id="canvas-container"></div>
+
+  <script>
+    // --- THREE.JS SCENE SETUP ---
+    const container = document.getElementById('canvas-container');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color('#0d0f14');
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.05, 100);
+    camera.position.set(2.5, 1.8, 3.2);
+
+    const renderer = new THREE.WebGLRenderer({{ antialias: true, alpha: false, powerPreference: "high-performance" }});
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
+    renderer.outputEncoding = THREE.sRGBEncoding;
+    container.appendChild(renderer.domElement);
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+
+    // Studio Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+    scene.add(ambientLight);
+
+    const dirLight1 = new THREE.DirectionalLight(0xffffff, 1.2);
+    dirLight1.position.set(5, 10, 7);
+    scene.add(dirLight1);
+
+    const dirLight2 = new THREE.DirectionalLight(0x818cf8, 0.6);
+    dirLight2.position.set(-5, -2, -5);
+    scene.add(dirLight2);
+
+    // Grid Floor
+    const gridHelper = new THREE.GridHelper(10, 20, 0x334155, 0x1e293b);
+    gridHelper.position.y = -1.0;
+    scene.add(gridHelper);
+
+    // --- REVERSE-ENGINEERED TRIPO3D EXPLOSION ENGINE (CRvlez9U.js) ---
+    const States = {{
+      Idle: 'idle',
+      Expanding: 'expanding',
+      Rotating: 'rotating',
+      Collapsing: 'collapsing'
+    }};
+
+    let currentState = States.Idle;
+    let animProgress = 0;
+    let animStartTime = 0;
+    let startProgress = 0;
+    const ANIM_DURATION = 800; // ms
+
+    let partsData = new Map();
+    let globalCenter = new THREE.Vector3();
+    let maxDistance = 1.0;
+    let isExploded = false;
+
+    // Tripo3D exact easing polynomials
+    const tripoOvershootEasing = (e) => 1 + 2.2 * Math.pow(e - 1, 3) + 1.2 * Math.pow(e - 1, 2);
+    const tripoCollapseEasing = (e) => e < 0.5 ? 4 * e * e * e : 1 - Math.pow(-2 * e + 2, 3) / 2;
+
+    function initExplosionData(model) {{
+      const bBoxUnion = new THREE.Box3();
+      const meshes = [];
+
+      model.traverse((child) => {{
+        if (child.isMesh) {{
+          meshes.push(child);
+          child.geometry.computeBoundingBox();
+          const partBox = child.geometry.boundingBox.clone();
+          partBox.applyMatrix4(child.matrixWorld);
+          bBoxUnion.union(partBox);
+        }}
+      }});
+
+      bBoxUnion.getCenter(globalCenter);
+      const bBoxSize = new THREE.Vector3();
+      bBoxUnion.getSize(bBoxSize);
+      gridHelper.position.y = bBoxUnion.min.y - 0.05;
+
+      // Adjust camera to fit
+      const maxDim = Math.max(bBoxSize.x, bBoxSize.y, bBoxSize.z);
+      camera.position.set(maxDim * 1.6, maxDim * 1.2, maxDim * 2.2);
+      controls.target.copy(globalCenter);
+      controls.update();
+
+      // Compute max distance
+      maxDistance = 0;
+      meshes.forEach((mesh) => {{
+        const pos = new THREE.Vector3();
+        mesh.getWorldPosition(pos);
+        const dist = pos.distanceTo(globalCenter);
+        if (dist > maxDistance) maxDistance = dist;
+      }});
+      if (maxDistance < 1e-4) maxDistance = 1.0;
+
+      // Register parts data
+      partsData.clear();
+      const partsContainer = document.getElementById('parts-container');
+      partsContainer.innerHTML = '';
+      document.getElementById('part-count').innerText = meshes.length;
+
+      meshes.forEach((mesh, idx) => {{
+        const worldPos = new THREE.Vector3();
+        mesh.getWorldPosition(worldPos);
+
+        const lVec = worldPos.clone().sub(globalCenter);
+        let dist = lVec.length();
+        if (dist < 1e-4) {{
+          lVec.set((Math.random() - 0.5) * 0.01, (Math.random() - 0.5) * 0.01, (Math.random() - 0.5) * 0.01);
+        }}
+        lVec.normalize();
+
+        const geomCenter = new THREE.Vector3();
+        if (mesh.geometry.boundingBox) {{
+          mesh.geometry.boundingBox.getCenter(geomCenter);
+        }}
+
+        // Tripo tumbling rotation vector and speed
+        const rotAxis = new THREE.Vector3(1, (Math.random() - 0.5) * 0.6, (Math.random() - 0.5) * 0.6).normalize();
+        const rotSpeedFactor = (0.5 + Math.random()) * (Math.random() > 0.5 ? 1 : -1);
+
+        const partInfo = {{
+          mesh: mesh,
+          originalLocalPosition: mesh.position.clone(),
+          originalRotation: mesh.quaternion.clone(),
+          explodeDirection: lVec.clone(),
+          distanceWeight: dist / maxDistance,
+          geometryCenterOffset: geomCenter.clone(),
+          accumulatedRotation: 0,
+          rotationAxis: rotAxis,
+          rotationSpeedFactor: rotSpeedFactor,
+          snapshotRotation: 0
+        }};
+        partsData.set(mesh, partInfo);
+
+        // UI Item
+        const item = document.createElement('div');
+        item.className = 'part-item';
+        const colorHex = '#' + (mesh.material?.color?.getHexString() || '818cf8');
+        item.innerHTML = `
+          <div class="part-badge">
+            <span class="part-color-dot" style="background: ${{colorHex}}"></span>
+            <span>${{mesh.name || 'Part ' + idx}}</span>
+          </div>
+          <span style="opacity: 0.6; font-size: 10px;">👁</span>
+        `;
+        item.onclick = () => {{
+          mesh.visible = !mesh.visible;
+          item.style.opacity = mesh.visible ? '1' : '0.35';
+        }};
+        partsContainer.appendChild(item);
+      }});
+    }}
+
+    // Apply Tripo3D displacement and tumbling
+    function applyExplosion(tValue, deltaSec = 0.016) {{
+      const tempVec = new THREE.Vector3();
+      const rotQuat = new THREE.Quaternion();
+      const isCollapsing = (currentState === States.Collapsing);
+      const collapseProgress = isCollapsing ? Math.min((performance.now() - animStartTime) / ANIM_DURATION, 1) : 0;
+      const collapseEase = tripoCollapseEasing(collapseProgress);
+
+      partsData.forEach((info, mesh) => {{
+        if (isCollapsing) {{
+          // Unwind tumbling smoothly to zero
+          info.accumulatedRotation = info.snapshotRotation * (1 - collapseEase);
+          rotQuat.setFromAxisAngle(info.rotationAxis, info.accumulatedRotation);
+          rotQuat.premultiply(info.originalRotation);
+
+          // Pivot compensation around geometric center
+          const rOrig = info.geometryCenterOffset.clone().multiply(mesh.scale).applyQuaternion(info.originalRotation);
+          const rCur = info.geometryCenterOffset.clone().multiply(mesh.scale).applyQuaternion(rotQuat);
+          const pivotComp = rOrig.sub(rCur);
+
+          // Rewind displacement: (1 - collapseEase)
+          const rDist = maxDistance * (0.35 + 0.65 * Math.min(1, info.distanceWeight));
+          const disp = info.explodeDirection.clone().multiplyScalar((1 - collapseEase) * rDist);
+
+          mesh.position.copy(info.originalLocalPosition).add(pivotComp).add(disp);
+          mesh.quaternion.copy(rotQuat);
+          return;
+        }}
+
+        // Staggered local timing: F(distanceWeight, progress)
+        const tLocal = Math.max(0, Math.min(1, (tValue - (1 - info.distanceWeight) * 0.10) / 0.60));
+        const easedProgress = tripoOvershootEasing(tLocal);
+
+        // Tumbling rotation once exploded: I(tLocal)
+        if (tLocal >= 1.0) {{
+          info.accumulatedRotation += 0.02 * info.rotationSpeedFactor * (deltaSec * 60);
+          rotQuat.setFromAxisAngle(info.rotationAxis, info.accumulatedRotation);
+          rotQuat.premultiply(info.originalRotation);
+
+          // True geometric center pivot compensation
+          const rOrig = info.geometryCenterOffset.clone().multiply(mesh.scale).applyQuaternion(info.originalRotation);
+          const rCur = info.geometryCenterOffset.clone().multiply(mesh.scale).applyQuaternion(rotQuat);
+          const pivotComp = rOrig.sub(rCur);
+
+          const rDist = maxDistance * (0.35 + 0.65 * Math.min(1, info.distanceWeight));
+          const disp = info.explodeDirection.clone().multiplyScalar(rDist);
+
+          mesh.position.copy(info.originalLocalPosition).add(pivotComp).add(disp);
+          mesh.quaternion.copy(rotQuat);
+        }} else {{
+          // Pure translation outward
+          const rDist = maxDistance * (0.35 + 0.65 * Math.min(1, info.distanceWeight));
+          const disp = info.explodeDirection.clone().multiplyScalar(easedProgress * rDist);
+          mesh.position.copy(info.originalLocalPosition).add(disp);
+          mesh.quaternion.copy(info.originalRotation);
+        }}
+      }});
+    }}
+
+    // State machine updates
+    function updateAnimation(deltaSec) {{
+      if (currentState === States.Idle) return;
+
+      const now = performance.now();
+      const elapsed = now - animStartTime;
+      const step = Math.min(elapsed / ANIM_DURATION, 1.0);
+
+      if (currentState === States.Expanding) {{
+        animProgress = startProgress + (1.0 - startProgress) * step;
+        document.getElementById('explode-slider').value = animProgress;
+        applyExplosion(animProgress, deltaSec);
+        if (step >= 1.0) {{
+          currentState = States.Rotating;
+        }}
+      }} else if (currentState === States.Rotating) {{
+        applyExplosion(1.0, deltaSec);
+      }} else if (currentState === States.Collapsing) {{
+        animProgress = startProgress * (1.0 - step);
+        document.getElementById('explode-slider').value = animProgress;
+        applyExplosion(animProgress, deltaSec);
+        if (step >= 1.0) {{
+          currentState = States.Idle;
+          // Reset cleanly to exact rest positions
+          partsData.forEach((info, mesh) => {{
+            mesh.position.copy(info.originalLocalPosition);
+            mesh.quaternion.copy(info.originalRotation);
+            info.accumulatedRotation = 0;
+          }});
+        }}
+      }}
+    }}
+
+    // Controls
+    const explodeBtn = document.getElementById('explode-toggle');
+    const explodeSlider = document.getElementById('explode-slider');
+    const explodeText = document.getElementById('explode-text');
+
+    explodeBtn.onclick = () => {{
+      isExploded = !isExploded;
+      explodeBtn.classList.toggle('active', isExploded);
+      explodeText.innerText = isExploded ? 'Collapse' : 'Explode';
+      animStartTime = performance.now();
+      startProgress = parseFloat(explodeSlider.value);
+
+      if (isExploded) {{
+        currentState = States.Expanding;
+      }} else {{
+        // Snapshot current rotation for smooth unwinding
+        partsData.forEach((info) => {{
+          info.snapshotRotation = info.accumulatedRotation;
+        }});
+        currentState = States.Collapsing;
+      }}
+    }};
+
+    explodeSlider.oninput = (e) => {{
+      const val = parseFloat(e.target.value);
+      currentState = States.Idle;
+      isExploded = (val > 0.5);
+      explodeBtn.classList.toggle('active', isExploded);
+      explodeText.innerText = isExploded ? 'Collapse' : 'Explode';
+      applyExplosion(val, 0);
+    }};
+
+    // Load Model
+    const loader = new THREE.GLTFLoader();
+    loader.load('{glb_filename}', (gltf) => {{
+      const model = gltf.scene;
+      scene.add(model);
+      initExplosionData(model);
+      document.getElementById('loading').style.opacity = '0';
+      setTimeout(() => document.getElementById('loading').style.display = 'none', 400);
+    }}, undefined, (err) => {{
+      console.warn('Could not auto-load {glb_filename}. Drag and drop a GLB file to view.', err);
+      document.getElementById('loading').innerHTML = `
+        <p style="color: #ef4444; font-size: 16px; font-weight: 600;">Could not automatically load {glb_filename}</p>
+        <p style="color: var(--text-muted); font-size: 13px; margin-top: 8px;">Run a local web server (e.g. <code>python -m http.server</code>) or drag-and-drop your GLB file here.</p>
+      `;
+    }});
+
+    // Drag-and-drop GLB support
+    window.addEventListener('dragover', (e) => e.preventDefault());
+    window.addEventListener('drop', (e) => {{
+      e.preventDefault();
+      const file = e.dataTransfer.files[0];
+      if (file && file.name.endsWith('.glb')) {{
+        const reader = new FileReader();
+        reader.onload = (ev) => {{
+          loader.parse(ev.target.result, '', (gltf) => {{
+            // Remove old meshes
+            while(scene.children.length > 0) {{ 
+              const obj = scene.children[0];
+              scene.remove(obj); 
+            }}
+            scene.add(ambientLight);
+            scene.add(dirLight1);
+            scene.add(dirLight2);
+            scene.add(gridHelper);
+            scene.add(gltf.scene);
+            initExplosionData(gltf.scene);
+            document.getElementById('loading').style.display = 'none';
+          }});
+        }};
+        reader.readAsArrayBuffer(file);
+      }}
+    }});
+
+    // Window Resize
+    window.addEventListener('resize', () => {{
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }});
+
+    // Animation Loop
+    let clock = new THREE.Clock();
+    function animate() {{
+      requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+      controls.update();
+      updateAnimation(delta);
+      renderer.render(scene, camera);
+    }}
+    animate();
+  </script>
+</body>
+</html>
+"""
+    with open(output_html_path, "w", encoding="utf-8") as f:
+        f.write(html_content)
+    print(f"[TRIPO_VIEWER] Saved interactive 3D explosion viewer to {output_html_path}")
+    return output_html_path
+
 
 
 def generate_dense_grid_points(

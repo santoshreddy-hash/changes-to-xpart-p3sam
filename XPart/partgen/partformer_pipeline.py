@@ -752,19 +752,20 @@ class PartFormerPipeline(TokenAllocMixin):
         else:
             part_meshes = raw_meshes
 
+        # Denormalize each part mesh into world coordinates
+        valid_part_meshes = []
         for i, part_mesh in enumerate(part_meshes):
-            if part_mesh is not None:
-                random_color = np.random.randint(0, 255, size=3)
-                part_mesh.visual.face_colors = random_color
-                out.add_geometry(part_mesh)
-        print(f"Denormalize mesh: {center}, {scale}")
-        for key in out.geometry.keys():
-            _v = out.geometry[key].vertices
-            _v = _v * scale + center
-            out.geometry[key].vertices = _v
+            if part_mesh is not None and hasattr(part_mesh, "vertices") and len(part_mesh.vertices) > 0:
+                part_mesh.vertices = part_mesh.vertices * scale + center
+                valid_part_meshes.append(part_mesh)
+
+        print(f"Denormalize {len(valid_part_meshes)} part meshes with center={center}, scale={scale}")
+        # Build Tripo3D-compatible multi-node assembly scene (local centered vertices + node translation vectors)
+        from .utils.mesh_utils import create_tripo_assembly_scene, explode_mesh_tripo
+        out = create_tripo_assembly_scene(valid_part_meshes)
 
         if self.verbose:
-            explode_object = explode_mesh(copy.deepcopy(out), explosion_scale=0.2)
+            explode_object = explode_mesh_tripo(out, explosion_scale=0.35)
             # add bbox into out
             out_bbox = trimesh.Scene()
             out_bbox.add_geometry(out)

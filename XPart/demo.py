@@ -95,11 +95,24 @@ def main(ckpt_path, config, mesh_path, save_dir, ignore_keys=(), aabb_path=None,
             **additional_params,
         )
         pipeline_time = time.perf_counter() - pipeline_start
-    obj_mesh.export(save_dir / f"train_cfg_{cfg:04f}_dit_boxgpt_{uid}.glb")
+    from partgen.utils.mesh_utils import export_tripo_assembly_glb, generate_tripo_viewer_html
+
+    assembled_glb_name = f"train_cfg_{cfg:04f}_dit_boxgpt_{uid}.glb"
+    exploded_glb_name = f"train_cfg_{cfg:04f}_explode_boxgpt_{uid}.glb"
+    viewer_html_name = f"train_cfg_{cfg:04f}_viewer_{uid}.html"
+
+    export_tripo_assembly_glb(obj_mesh, save_dir / assembled_glb_name)
     out_bbox.export(save_dir / f"train_cfg_{cfg:04f}_dit_boxgpt_{uid}_bbox.glb")
     mesh_gt_bbox.export(save_dir / f"train_cfg_{cfg:04f}_input_boxgpt_{uid}.glb")
-    explode_object.export(save_dir / f"train_cfg_{cfg:04f}_explode_boxgpt_{uid}.glb")
-    print(f"Successfully exported all meshes to {save_dir}")
+    export_tripo_assembly_glb(explode_object, save_dir / exploded_glb_name)
+    
+    # Generate standalone Tripo3D interactive viewer
+    generate_tripo_viewer_html(
+        glb_filename=assembled_glb_name,
+        output_html_path=save_dir / viewer_html_name,
+        model_title=f"{uid} - Segmented Assembly"
+    )
+    print(f"Successfully exported all meshes and interactive viewer to {save_dir}")
     total_time = time.perf_counter() - start_total
     print(f"\n================ TIMING REPORT ================")
     print(f"  Pipeline Inference & Reconstruction: {pipeline_time:.2f} s")
