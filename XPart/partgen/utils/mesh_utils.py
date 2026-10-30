@@ -10,6 +10,9 @@ from einops import repeat
 import traceback
 import pymeshlab
 import tempfile
+import logging
+
+logger = logging.getLogger("mesh_utils")
 
 
 def random_sample_pointcloud(mesh: trimesh.Trimesh, num=30000, seed=42):
@@ -325,24 +328,151 @@ TRIPO_PALETTE = np.array([
 ], dtype=np.uint8)
 
 
-def create_tripo_assembly_scene(part_meshes, names=None, colors=None):
+def seal_and_cap_mesh(sub: trimesh.Trimesh) -> trimesh.Trimesh:
+    """
+    Watertight QuickCap / Manifold Loop Capping:
+    Detects all open 3D boundary loops on sliced or extracted part submeshes,
+    and caps them with outward-consistent triangulation fans so that exploded
+    parts have solid, watertight mating faces with zero holes.
+    """
+    if sub is None or not hasattr(sub, "vertices") or len(sub.vertices) == 0:
+        return sub
+    m = sub.copy()
+    try:
+        import networkx as nx
+        face_edges = m.edges
+        edge_set = set(map(tuple, face_edges))
+        boundary_directed = [tuple(e) for e in face_edges if (e[1], e[0]) not in edge_set]
+        if not boundary_directed:
+            trimesh.repair.fill_holes(m)
+            trimesh.repair.fix_normals(m)
+            return m
+        
+        G = nx.DiGraph()
+        for u, v in boundary_directed:
+            G.add_edge(u, v)
+            
+        visited_edges = set()
+        new_v = list(m.vertices)
+        new_f = list(m.faces)
+        
+        for u_start, v_next in boundary_directed:
+            if (u_start, v_next) in visited_edges:
+                continue
+            cycle = [u_start]
+            curr = v_next
+            visited_edges.add((u_start, v_next))
+            while curr != u_start and curr in G:
+                cycle.append(curr)
+                succs = [s for s in G.successors(curr) if (curr, s) not in visited_edges]
+                if not succs:
+                    break
+                next_node = succs[0]
+                visited_edges.add((curr, next_node))
+                curr = next_node
+                if len(cycle) > len(boundary_directed) + 10:
+                    break
+                    
+            if len(cycle) >= 3 and curr == u_start:
+                center = np.mean(m.vertices[cycle], axis=0)
+                c_idx = len(new_v)
+                new_v.append(center)
+                for i in range(len(cycle)):
+                    u_node = cycle[i]
+                    v_node = cycle[(i + 1) % len(cycle)]
+                    new_f.append([v_node, u_node, c_idx])
+                    
+        capped = trimesh.Trimesh(vertices=new_v, faces=new_f, process=True)
+        trimesh.repair.fill_holes(capped)
+        trimesh.repair.fix_normals(capped)
+        return capped
+    except Exception as e:
+        logger.warning(f"seal_and_cap_mesh fallback: {e}")
+        try:
+            trimesh.repair.fill_holes(m)
+            trimesh.repair.fix_normals(m)
+        except Exception:
+            pass
+        return m
+
+
+def clean_and_merge_parts(parts, iou_thresh=0.55, containment_thresh=0.75):
+    """
+    Merges duplicate or heavily overlapping parts, and small fragment slivers.
+    Eliminates over-segmentation and prevents duplicate whole-body parts.
+    """
+    valid = [p for p in parts if p is not None and hasattr(p, "vertices") and len(p.vertices) > 0]
+    if len(valid) <= 1:
+        return valid
+
+    merged = list(valid)
+    changed = True
+    while changed:
+        changed = False
+        n = len(merged)
+        for i in range(n):
+            if changed:
+                break
+            box_i = merged[i].bounds
+            vol_i = np.prod(box_i[1] - box_i[0])
+            if vol_i < 1e-8:
+                continue
+            for j in range(i + 1, n):
+                box_j = merged[j].bounds
+                vol_j = np.prod(box_j[1] - box_j[0])
+                if vol_j < 1e-8:
+                    continue
+                inter_min = np.maximum(box_i[0], box_j[0])
+                inter_max = np.minimum(box_i[1], box_j[1])
+                inter_dim = np.maximum(0, inter_max - inter_min)
+                inter_vol = np.prod(inter_dim)
+                if inter_vol <= 0:
+                    continue
+                union_vol = vol_i + vol_j - inter_vol
+                iou = inter_vol / union_vol if union_vol > 0 else 0
+                contain_i = inter_vol / vol_i
+                contain_j = inter_vol / vol_j
+
+                # Check if parts are duplicate or heavily co-extensive
+                if iou > iou_thresh or (contain_i > containment_thresh and contain_j > 0.4) or (contain_j > containment_thresh and contain_i > 0.4):
+                    logger.info(f"[MERGE] Merging part {i} (vol={vol_i:.4f}) and part {j} (vol={vol_j:.4f}) with IoU={iou:.3f}")
+                    combined = trimesh.util.concatenate([merged[i], merged[j]])
+                    combined.update_faces(combined.unique_faces())
+                    combined.remove_unreferenced_vertices()
+                    del merged[j]
+                    merged[i] = combined
+                    changed = True
+                    break
+    return merged
+
+
+def create_tripo_assembly_scene(part_meshes, names=None, colors=None, auto_clean=True, auto_seal=True):
     """
     Constructs a Tripo3D-compatible multi-node trimesh.Scene.
     Every part submesh is normalized so its local vertex coordinates are centered
     around [0, 0, 0], and its world position is encoded as a Node translation
     transform matrix T_i = C_i.
+    Includes automated part deduplication (clean_and_merge_parts) and watertight
+    boundary loop capping (seal_and_cap_mesh) to prevent holes and color overlap.
     """
     assembly = trimesh.Scene()
     valid_parts = [p for p in part_meshes if p is not None and hasattr(p, "vertices") and len(p.vertices) > 0]
+    
+    if auto_clean and len(valid_parts) > 1:
+        valid_parts = clean_and_merge_parts(valid_parts)
+        
     for i, p in enumerate(valid_parts):
         node_name = names[i] if (names is not None and i < len(names)) else f"tripo_part_{i}"
         color = colors[i] if (colors is not None and i < len(colors)) else TRIPO_PALETTE[i % len(TRIPO_PALETTE)]
         
+        # Seal and cap open boundary holes
+        p_proc = seal_and_cap_mesh(p) if auto_seal else p
+        
         # Compute geometric centroid (bbox center) in world space
-        center = (p.bounds[0] + p.bounds[1]) / 2.0
+        center = (p_proc.bounds[0] + p_proc.bounds[1]) / 2.0
         
         # Local-center the vertices
-        p_local = p.copy()
+        p_local = p_proc.copy()
         p_local.vertices = p_local.vertices - center
         
         # Assign distinct vibrant face colors
@@ -409,7 +539,22 @@ def export_tripo_assembly_glb(scene_or_parts, filepath, names=None, colors=None)
     filepath.parent.mkdir(parents=True, exist_ok=True)
     
     if isinstance(scene_or_parts, trimesh.Scene):
-        assembly_scene = scene_or_parts
+        if len(scene_or_parts.geometry) > 1:
+            part_meshes = []
+            part_names = []
+            for name, geom in scene_or_parts.geometry.items():
+                if hasattr(geom, "vertices") and len(geom.vertices) > 0:
+                    try:
+                        xform = scene_or_parts.graph[name][0]
+                        wg = geom.copy()
+                        wg.apply_transform(xform)
+                    except Exception:
+                        wg = geom.copy()
+                    part_meshes.append(wg)
+                    part_names.append(name)
+            assembly_scene = create_tripo_assembly_scene(part_meshes, names=names or part_names, colors=colors)
+        else:
+            assembly_scene = scene_or_parts
     elif isinstance(scene_or_parts, (list, tuple)):
         assembly_scene = create_tripo_assembly_scene(scene_or_parts, names=names, colors=colors)
     else:
@@ -892,6 +1037,13 @@ def generate_tripo_viewer_html(glb_filename: str, output_html_path: str, model_t
       model.traverse((child) => {{
         if (child.isMesh) {{
           meshes.push(child);
+          if (child.material) {{
+            child.material.side = THREE.DoubleSide;
+            child.material.depthWrite = true;
+            child.material.polygonOffset = true;
+            child.material.polygonOffsetFactor = 1.0;
+            child.material.polygonOffsetUnits = 1.0;
+          }}
           child.geometry.computeBoundingBox();
           const partBox = child.geometry.boundingBox.clone();
           partBox.applyMatrix4(child.matrixWorld);
@@ -1598,8 +1750,21 @@ def remove_floater(mesh: pymeshlab.MeshSet):
 
 
 def fix_mesh(mesh: trimesh.Trimesh):
-    ms = trimesh2pymeshlab(mesh)
-    ms = remove_overlength_edge(ms, max_length=8 / 512)
-    ms = remove_floater(ms)
-    mesh = pymeshlab2trimesh(ms)
-    return mesh
+    """
+    Non-destructive watertight mesh repair:
+    Removes duplicated faces/unreferenced vertices and seals all open boundary loops.
+    Never deletes large planar triangles (which caused holes in parts).
+    """
+    if mesh is None or not hasattr(mesh, "vertices") or len(mesh.vertices) == 0:
+        return mesh
+    try:
+        m = mesh.copy()
+        m.update_faces(m.unique_faces())
+        m.remove_unreferenced_vertices()
+        m = seal_and_cap_mesh(m)
+        trimesh.repair.fix_normals(m)
+        return m
+    except Exception as e:
+        logger.warning(f"fix_mesh fallback: {e}")
+        return mesh
+

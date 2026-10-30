@@ -433,3 +433,90 @@ header {
 #file-input {
   display: none;
 }
+
+/* Upload Dropzone */
+.upload-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 18px 12px;
+  background: rgba(99, 102, 241, 0.05);
+  border: 2px dashed rgba(99, 102, 241, 0.35);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: center;
+  margin-bottom: 14px;
+}
+
+.upload-dropzone:hover, .upload-dropzone.dragover {
+  background: rgba(99, 102, 241, 0.12);
+  border-color: #6366f1;
+  box-shadow: 0 0 20px rgba(99, 102, 241, 0.3);
+  transform: translateY(-1px);
+}
+
+.upload-dropzone svg {
+  color: #818cf8;
+}
+
+.upload-dropzone-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.upload-dropzone-subtext {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Full-Screen Drag-and-Drop Overlay */
+#drag-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(11, 13, 19, 0.88);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  z-index: 9999;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  border: 4px dashed #6366f1;
+}
+
+#drag-overlay.active {
+  display: flex;
+}
+
+#drag-overlay svg {
+  color: #6366f1;
+  filter: drop-shadow(0 0 24px rgba(99, 102, 241, 0.6));
+  animation: bounce 1s infinite alternate ease-in-out;
+}
+
+@keyframes bounce {
+  from { transform: translateY(0); }
+  to { transform: translateY(-12px); }
+}
+
+#drag-overlay h2 {
+  font-size: 24px;
+  font-weight: 700;
+  margin-top: 18px;
+  color: #fff;
+}
+
+#drag-overlay p {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+

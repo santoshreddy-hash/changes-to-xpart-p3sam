@@ -14,6 +14,15 @@
 </head>
 <body>
 
+  <!-- Full-Screen Drag-and-Drop Overlay -->
+  <div id="drag-overlay">
+    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+    </svg>
+    <h2>Drop 3D Model to Upload</h2>
+    <p>Supports .GLB, .OBJ, and .PLY files</p>
+  </div>
+
   <!-- Top Header Navigation -->
   <header>
     <div class="brand-badge glass">
@@ -51,6 +60,19 @@
   <aside class="pipeline-drawer glass">
     <div>
       <div class="section-title">
+        <span>Upload Custom Model</span>
+      </div>
+      <div id="sidebar-dropzone" class="upload-dropzone">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+        </svg>
+        <div class="upload-dropzone-text">Drop 3D Object Here</div>
+        <div class="upload-dropzone-subtext">or click to browse (.glb, .obj, .ply)</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-title">
         <span>Sample Models</span>
         <span style="font-size: 11px; color: var(--text-muted);">Click to load</span>
       </div>
@@ -63,7 +85,18 @@
 
     <div>
       <div class="section-title">
-        <span>Pipeline Parameters</span>
+        <span>Pipeline Engine</span>
+      </div>
+
+      <div class="param-group" style="margin-bottom: 12px;">
+        <label class="param-label">
+          <span>Segmentation Mode</span>
+          <span style="color: var(--success-green); font-family: monospace;">Watertight</span>
+        </label>
+        <select id="engine-mode-select" class="param-select">
+          <option value="tripo_exact" selected>Tripo3D Lossless (Zero Holes, Zero Overlap)</option>
+          <option value="xpart_dit">X-Part DiT Generative Diffusion</option>
+        </select>
       </div>
 
       <div class="param-group" style="margin-bottom: 12px;">

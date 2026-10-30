@@ -67,6 +67,13 @@ function initExplosionData(model) {
   model.traverse((child) => {
     if (child.isMesh) {
       meshes.push(child);
+      if (child.material) {
+        child.material.side = THREE.DoubleSide;
+        child.material.depthWrite = true;
+        child.material.polygonOffset = true;
+        child.material.polygonOffsetFactor = 1.0;
+        child.material.polygonOffsetUnits = 1.0;
+      }
       child.geometry.computeBoundingBox();
       const partBox = child.geometry.boundingBox.clone();
       partBox.applyMatrix4(child.matrixWorld);
@@ -336,13 +343,32 @@ async function fetchPresets() {
   }
 }
 
-// File Upload
+// File Upload & Drag-and-Drop
 const fileInput = document.getElementById('file-input');
-document.getElementById('upload-btn').onclick = () => fileInput.click();
+const uploadBtn = document.getElementById('upload-btn');
+const sidebarDropzone = document.getElementById('sidebar-dropzone');
+const dragOverlay = document.getElementById('drag-overlay');
 
-fileInput.onchange = async (e) => {
-  const file = e.target.files[0];
+if (uploadBtn) uploadBtn.onclick = () => fileInput.click();
+if (sidebarDropzone) sidebarDropzone.onclick = () => fileInput.click();
+
+async function handleFileUpload(file) {
   if (!file) return;
+  const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+  if (!['.glb', '.obj', '.ply'].includes(ext)) {
+    alert(`Unsupported file format "${ext}". Please upload a .glb, .obj, or .ply file.`);
+    return;
+  }
+
+  const banner = document.getElementById('progress-banner');
+  const stageText = document.getElementById('progress-stage-text');
+  const percentText = document.getElementById('progress-percent-text');
+  const barFill = document.getElementById('progress-bar-fill');
+  
+  banner.style.display = 'flex';
+  stageText.innerText = `Uploading ${file.name}...`;
+  percentText.innerText = '30%';
+  barFill.style.width = '30%';
 
   const formData = new FormData();
   formData.append('file', file);
@@ -351,14 +377,50 @@ fileInput.onchange = async (e) => {
     const res = await fetch('/api/upload', { method: 'POST', body: formData });
     const data = await res.json();
     if (data.status === 'success') {
+      stageText.innerText = 'Loading 3D Mesh in Viewport...';
+      percentText.innerText = '100%';
+      barFill.style.width = '100%';
+      setTimeout(() => { banner.style.display = 'none'; }, 600);
       loadModelFromUrl(data.path, file.name);
     } else {
+      banner.style.display = 'none';
       alert(data.error || 'Upload failed');
     }
   } catch (err) {
+    banner.style.display = 'none';
     alert('Upload error: ' + err);
   }
+}
+
+fileInput.onchange = (e) => {
+  if (e.target.files && e.target.files[0]) {
+    handleFileUpload(e.target.files[0]);
+  }
 };
+
+// Window Drag and Drop Events
+window.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  dragOverlay.classList.add('active');
+});
+
+window.addEventListener('dragleave', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.clientX <= 0 || e.clientY <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
+    dragOverlay.classList.remove('active');
+  }
+});
+
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  dragOverlay.classList.remove('active');
+  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+    handleFileUpload(e.dataTransfer.files[0]);
+  }
+});
 
 // Run Segmentation Pipeline
 document.getElementById('run-pipeline-btn').onclick = async () => {
@@ -367,6 +429,7 @@ document.getElementById('run-pipeline-btn').onclick = async () => {
     return;
   }
 
+  const engineMode = document.getElementById('engine-mode-select') ? document.getElementById('engine-mode-select').value : 'tripo_exact';
   const mcAlgo = document.getElementById('mc-algo-select').value;
   const steps = parseInt(document.getElementById('steps-select').value);
   const resolution = parseInt(document.getElementById('res-select').value);
@@ -383,6 +446,7 @@ document.getElementById('run-pipeline-btn').onclick = async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         mesh_path: currentModelPath,
+        mode: engineMode,
         mc_algo: mcAlgo,
         steps: steps,
         resolution: resolution,

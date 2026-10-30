@@ -590,6 +590,48 @@ def save_mesh(save_path, mesh, face_ids, color_map, save_ply=True, save_npy=True
         np.save(save_path.replace(".glb", "_face_ids.npy"), face_ids)
 
 
+def deduplicate_aabbs(aabb_arr, iou_thresh=0.60, containment_thresh=0.80):
+    if len(aabb_arr) <= 1:
+        return aabb_arr
+    clean = list(aabb_arr)
+    changed = True
+    while changed:
+        changed = False
+        n = len(clean)
+        for i in range(n):
+            if changed:
+                break
+            box_i = clean[i]
+            dims_i = np.maximum(0, box_i[1] - box_i[0])
+            vol_i = np.prod(dims_i)
+            if vol_i < 1e-8:
+                continue
+            for j in range(i + 1, n):
+                box_j = clean[j]
+                dims_j = np.maximum(0, box_j[1] - box_j[0])
+                vol_j = np.prod(dims_j)
+                if vol_j < 1e-8:
+                    continue
+                inter_min = np.maximum(box_i[0], box_j[0])
+                inter_max = np.minimum(box_i[1], box_j[1])
+                inter_dim = np.maximum(0, inter_max - inter_min)
+                inter_vol = np.prod(inter_dim)
+                if inter_vol <= 0:
+                    continue
+                union_vol = vol_i + vol_j - inter_vol
+                iou = inter_vol / union_vol if union_vol > 0 else 0
+                contain_i = inter_vol / vol_i
+                contain_j = inter_vol / vol_j
+                if iou > iou_thresh or (contain_i > containment_thresh and contain_j > 0.5) or (contain_j > containment_thresh and contain_i > 0.5):
+                    union_min = np.minimum(box_i[0], box_j[0])
+                    union_max = np.maximum(box_i[1], box_j[1])
+                    clean[i] = [union_min, union_max]
+                    del clean[j]
+                    changed = True
+                    break
+    return np.array(clean)
+
+
 def get_aabb_from_face_ids(mesh, face_ids):
     unique_ids = np.unique(face_ids)
     aabb = []
@@ -603,7 +645,8 @@ def get_aabb_from_face_ids(mesh, face_ids):
         min_xyz = np.min(_points, axis=0)
         max_xyz = np.max(_points, axis=0)
         aabb.append([min_xyz, max_xyz])
-    return np.array(aabb)
+    raw_aabb = np.array(aabb)
+    return deduplicate_aabbs(raw_aabb)
 
 
 def calculate_face_areas(mesh):

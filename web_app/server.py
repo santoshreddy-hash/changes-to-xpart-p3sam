@@ -155,43 +155,58 @@ def run_pipeline_sync(job_id, mesh_path, params):
             ]
             env = os.environ.copy()
             env["TEMP"] = "C:\\Users\\7950x_RTX4090\\AppData\\Local\\Temp"
-            env["TMP"] = "C:\\Users\\7950x_RTX4090\\AppData\\Local\\Temp"
+            env["PYTHONIOENCODING"] = "utf-8"
+            env["PYTHONUTF8"] = "1"
             
-            res_p3 = subprocess.run(cmd_p3sam, cwd=str(ROOT_DIR), env=env, capture_output=True, text=True)
+            res_p3 = subprocess.run(cmd_p3sam, cwd=str(ROOT_DIR), env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
             aabb_npy = p3sam_out_dir / f"{stem}_aabb.npy"
             
-            if not aabb_npy.exists():
-                print(f"[P3-SAM fallback or direct X-Part bbox] stdout:\n{res_p3.stdout}\nstderr:\n{res_p3.stderr}")
-                aabb_npy = None
-
-            jobs[job_id]["stage"] = "Step 2/3: Running X-Part DiT diffusion & DiffDMC CUDA GPU marching cubes..."
-            jobs[job_id]["progress"] = 50
+            # Check for face_ids from P3-SAM
+            face_ids_cands = list(p3sam_out_dir.glob("*face_ids.npy"))
+            post_cands = [p for p in face_ids_cands if "final_post" in p.name]
+            best_face_ids = post_cands[0] if post_cands else (face_ids_cands[0] if face_ids_cands else None)
             
-            # Run XPart demo.py
-            xpart_script = ROOT_DIR / "XPart" / "demo.py"
-            cmd_xpart = [
-                PYTHON_EXE, str(xpart_script),
-                "--mesh_path", str(mesh_p),
-                "--save_dir", str(out_job_dir),
-                "--mc_algo", params.get("mc_algo", "dmc"),
-                "--num_inference_steps", str(params.get("steps", 50)),
-                "--octree_resolution", str(params.get("resolution", 512))
-            ]
-            if aabb_npy:
-                cmd_xpart.extend(["--aabb_path", str(aabb_npy)])
+            mode = params.get("mode", "tripo_exact")
+            if mode == "tripo_exact" and best_face_ids and best_face_ids.exists():
+                jobs[job_id]["stage"] = "Step 2/3: Partitioning input mesh into watertight Tripo3D manifold parts..."
+                jobs[job_id]["progress"] = 60
                 
-            res_xpart = subprocess.run(cmd_xpart, cwd=str(ROOT_DIR), env=env, capture_output=True, text=True)
-            print("XPart output:\n", res_xpart.stdout[-1000:])
-            
-            # Find generated glb
-            candidates = list(out_job_dir.glob("train_cfg_*_dit_boxgpt_*.glb"))
-            if candidates:
-                generated_glb = candidates[0]
-                loaded_gen = trimesh.load(str(generated_glb))
-                part_meshes = [g for g in loaded_gen.geometry.values() if hasattr(g, "vertices") and len(g.vertices) > 0]
-                assembly_scene = create_tripo_assembly_scene(part_meshes)
+                face_ids = np.load(best_face_ids)
+                input_mesh = trimesh.load(str(mesh_p), force="mesh")
+                unique_ids = [uid for uid in np.unique(face_ids) if uid >= 0]
+                raw_parts = [input_mesh.submesh([face_ids == uid], append=True) for uid in unique_ids]
+                
+                # Automatically deduplicate overlapping bounding boxes, merge redundant fragments, and cap open cut holes
+                assembly_scene = create_tripo_assembly_scene(raw_parts, auto_clean=True, auto_seal=True)
             else:
-                raise RuntimeError(f"XPart failed to generate output. Stderr: {res_xpart.stderr}")
+                jobs[job_id]["stage"] = "Step 2/3: Running X-Part DiT diffusion & DiffDMC CUDA GPU marching cubes..."
+                jobs[job_id]["progress"] = 50
+                
+                # Run XPart demo.py
+                xpart_script = ROOT_DIR / "XPart" / "demo.py"
+                cmd_xpart = [
+                    PYTHON_EXE, str(xpart_script),
+                    "--mesh_path", str(mesh_p),
+                    "--save_dir", str(out_job_dir),
+                    "--mc_algo", params.get("mc_algo", "dmc"),
+                    "--num_inference_steps", str(params.get("steps", 50)),
+                    "--octree_resolution", str(params.get("resolution", 512))
+                ]
+                if aabb_npy and aabb_npy.exists():
+                    cmd_xpart.extend(["--aabb_path", str(aabb_npy)])
+                    
+                res_xpart = subprocess.run(cmd_xpart, cwd=str(ROOT_DIR), env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
+                print("XPart output:\n", res_xpart.stdout[-1000:])
+                
+                # Find generated glb
+                candidates = list(out_job_dir.glob("train_cfg_*_dit_boxgpt_*.glb"))
+                if candidates:
+                    generated_glb = candidates[0]
+                    loaded_gen = trimesh.load(str(generated_glb))
+                    part_meshes = [g for g in loaded_gen.geometry.values() if hasattr(g, "vertices") and len(g.vertices) > 0]
+                    assembly_scene = create_tripo_assembly_scene(part_meshes, auto_clean=True, auto_seal=True)
+                else:
+                    raise RuntimeError(f"XPart failed to generate output. Stderr: {res_xpart.stderr}")
 
         jobs[job_id]["stage"] = "Step 3/3: Exporting Tripo3D multi-node assembly & exact explosion wave..."
         jobs[job_id]["progress"] = 85
