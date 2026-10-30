@@ -106,7 +106,7 @@ function calculateGeometryStats(model) {
     faces: faces,
     vertices: vertices,
     dimensions: [size.x, size.y, size.z],
-    watertight: true
+    watertight: false
   };
 }
 
@@ -125,10 +125,10 @@ function updateMeshStatsDisplay(stats) {
   const wtBadge = document.getElementById('stat-watertight-badge');
   if (stats.watertight) {
     wtBadge.className = 'badge-tag watertight';
-    wtBadge.innerText = 'Solid Watertight ✓';
+    wtBadge.innerText = 'Watertight Closed';
   } else {
     wtBadge.className = 'badge-tag open';
-    wtBadge.innerText = 'Manifold Sealed';
+    wtBadge.innerText = 'Tripo3D Open Shells';
   }
 }
 
