@@ -257,36 +257,48 @@
   <div id="brush-toolbar" class="brush-toolbar glass" style="display: none;">
     <div class="brush-tool-indicator">
       <span class="brush-dot-pulse"></span>
-      <span>3D Brush Active</span>
+      <span>3D Brush</span>
+      <span id="brush-faces-badge" class="brush-badge">0 faces</span>
     </div>
 
     <div class="bar-divider"></div>
 
     <div class="brush-control-item">
-      <label>Target Scope:</label>
-      <select id="brush-scope-select" class="tool-select">
-        <option value="part" selected>Lock to Target Part (No Bleed)</option>
-        <option value="multi">Group Multiple Touched Parts</option>
+      <label>Mode:</label>
+      <select id="brush-mode-select" class="tool-select" title="Brush area freehand or flood-fill connected planar feature">
+        <option value="paint" selected>Brush Area</option>
+        <option value="flood">Flood Feature</option>
+      </select>
+    </div>
+
+    <div class="brush-control-item">
+      <label>Anti-Bleed:</label>
+      <select id="brush-scope-select" class="tool-select" title="Lock brush strictly to the target part faces to prevent bleed">
+        <option value="part" selected>Lock to Part</option>
+        <option value="multi">All Parts</option>
       </select>
     </div>
 
     <div class="brush-control-item">
       <label>Radius:</label>
-      <input type="range" id="brush-radius-slider" min="0.02" max="0.5" step="0.01" value="0.12" style="width: 70px;">
-      <span id="brush-radius-val" style="font-family: monospace; font-size: 10.5px;">0.12m</span>
+      <input type="range" id="brush-radius-slider" min="0.02" max="0.5" step="0.01" value="0.10" style="width: 55px;">
+      <span id="brush-radius-val" style="font-family: monospace; font-size: 10px;">0.10m</span>
     </div>
 
     <div class="brush-control-item">
-      <label>Group Color:</label>
-      <input type="color" id="brush-color-picker" value="#f43f5e" style="cursor: pointer; border: none; width: 22px; height: 22px; border-radius: 5px; background: none;">
+      <label>New Color:</label>
+      <input type="color" id="brush-color-picker" value="#f43f5e" style="cursor: pointer; border: none; width: 22px; height: 22px; border-radius: 5px; background: none;" title="Color for the new segmented part">
     </div>
 
     <div class="bar-divider"></div>
 
-    <button id="brush-group-btn" class="action-btn primary" title="Segment All Brushed Parts as One Color">
-      <span>Segment as One Color</span>
+    <button id="brush-split-btn" class="action-btn primary" title="Extract and carve brushed area into a new separate segmented part">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/>
+      </svg>
+      <span>Split as Separate Part</span>
     </button>
-    <button id="brush-clear-btn" class="tool-btn" title="Clear Brushed Selection">
+    <button id="brush-clear-btn" class="tool-btn" title="Clear brushed faces">
       <span>Clear</span>
     </button>
     <button id="brush-close-btn" class="icon-tool-btn" title="Exit Brush Mode">✕</button>

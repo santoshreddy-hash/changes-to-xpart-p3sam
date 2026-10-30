@@ -339,37 +339,6 @@ function initExplosionData(model) {
 
   // Register individual parts
   partsData.clear();
-  const partsContainer = document.getElementById('parts-container');
-  partsContainer.innerHTML = '';
-  const partCountEl = document.getElementById('part-count');
-  if (partCountEl) partCountEl.innerText = `${meshes.length} PARTS`;
-  const badgeCountEl = document.getElementById('parts-badge-count');
-  if (badgeCountEl) badgeCountEl.innerText = meshes.length;
-  document.getElementById('stat-parts-count').innerText = meshes.length > 1 ? `${meshes.length} Disjoint Parts` : '1 Single Object';
-
-  // Populate Quick Part Picker Dropdown
-  const quickSelect = document.getElementById('quick-part-select');
-  if (quickSelect) {
-    quickSelect.innerHTML = '<option value="">-- Choose Part to Inspect & Edit --</option>';
-    meshes.forEach((m, i) => {
-      const opt = document.createElement('option');
-      opt.value = i;
-      opt.textContent = `Part #${i + 1}: ${m.name || 'tripo_part_' + i}`;
-      quickSelect.appendChild(opt);
-    });
-    quickSelect.onchange = (e) => {
-      const val = e.target.value;
-      if (val !== '') {
-        const targetMesh = meshes[parseInt(val)];
-        if (targetMesh) {
-          selectPart(targetMesh);
-          const card = document.getElementById(`part-card-${val}`);
-          if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
-      }
-    };
-  }
-
   meshes.forEach((mesh, idx) => {
     const worldPos = new THREE.Vector3();
     mesh.getWorldPosition(worldPos);
@@ -420,9 +389,56 @@ function initExplosionData(model) {
       emissiveIntensity: 0.12,
       side: THREE.DoubleSide
     }));
+  });
 
-    // Detect color for UI swatch
-    let hexColor = palHex;
+  rebuildPartsHierarchyUI();
+}
+
+// --- DYNAMIC PARTS HIERARCHY & DROPDOWN UI REBUILDER ---
+function rebuildPartsHierarchyUI() {
+  const partsContainer = document.getElementById('parts-container');
+  if (!partsContainer) return;
+  partsContainer.innerHTML = '';
+
+  const partCountEl = document.getElementById('part-count');
+  if (partCountEl) partCountEl.innerText = `${partsData.size} PARTS`;
+  const badgeCountEl = document.getElementById('parts-badge-count');
+  if (badgeCountEl) badgeCountEl.innerText = partsData.size;
+  const statParts = document.getElementById('stat-parts-count');
+  if (statParts) statParts.innerText = partsData.size > 1 ? `${partsData.size} Disjoint Parts` : '1 Single Object';
+
+  // Populate Quick Part Picker Dropdown
+  const quickSelect = document.getElementById('quick-part-select');
+  if (quickSelect) {
+    quickSelect.innerHTML = '<option value="">-- Choose Part to Inspect & Edit --</option>';
+    let i = 0;
+    partsData.forEach((partInfo, m) => {
+      const opt = document.createElement('option');
+      opt.value = partInfo.index;
+      opt.textContent = `Part #${i + 1}: ${partInfo.name}`;
+      quickSelect.appendChild(opt);
+      i++;
+    });
+    quickSelect.onchange = (e) => {
+      const val = e.target.value;
+      if (val !== '') {
+        const targetIdx = parseInt(val);
+        for (const [m, info] of partsData.entries()) {
+          if (info.index === targetIdx) {
+            selectPart(m);
+            const card = document.getElementById(`part-card-${targetIdx}`);
+            if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            break;
+          }
+        }
+      }
+    };
+  }
+
+  // Populate Part Cards in Hierarchy Drawer
+  partsData.forEach((partInfo, mesh) => {
+    const idx = partInfo.index;
+    let hexColor = TRIPO_PALETTE[idx % TRIPO_PALETTE.length];
     if (mesh.material) {
       const m = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
       if (m && m.color) hexColor = '#' + m.color.getHexString();
@@ -433,7 +449,6 @@ function initExplosionData(model) {
     let pSize = new THREE.Vector3();
     if (mesh.geometry.boundingBox) mesh.geometry.boundingBox.getSize(pSize);
 
-    // Create Part Card in Hierarchy Drawer
     const card = document.createElement('div');
     card.className = 'part-item';
     card.id = `part-card-${idx}`;
@@ -490,9 +505,10 @@ function initExplosionData(model) {
     partsContainer.appendChild(card);
   });
 
-  // Calculate & show complete model statistics
-  const modelStats = calculateGeometryStats(model);
-  updateMeshStatsDisplay(modelStats);
+  if (currentLoadedMesh) {
+    const modelStats = calculateGeometryStats(currentLoadedMesh);
+    updateMeshStatsDisplay(modelStats);
+  }
 }
 
 // --- PART SELECTION & BLENDER TRANSFORM EDITING ---
@@ -891,18 +907,18 @@ document.getElementById('grid-toggle').onclick = (e) => {
   document.getElementById('grid-toggle').classList.toggle('active', gridHelper.visible);
 };
 
-// --- INTERACTIVE 3D BRUSH SEGMENTATION & ANTI-BLEED SCOPE FILTERING ---
+// --- INTERACTIVE 3D BRUSH SURFACE SELECTION & SEPARATE PART EXTRACTION ---
 let isBrushActive = false;
 let isBrushing = false;
-let brushLockedMesh = null; // Anti-bleed lock: locks onto initial part touched so stray sweeps onto other parts are ignored
-let brushedMeshes = new Set();
-let brushSavedMats = new Map();
+let brushLockedMesh = null; // Anti-bleed lock: locks onto initial part touched
+let brushMode = 'paint';    // 'paint' (Brush Area) | 'flood' (Flood Feature)
+let brushScope = 'part';    // 'part' (Lock to Target Part - No Bleed) | 'multi' (All Parts)
 let brushColor = '#f43f5e';
-let brushRadius = 0.12;
-let brushScope = 'part'; // 'part' (Lock to Target Part - No Bleed) | 'multi' (Group Multiple Touched Parts)
+let brushRadius = 0.10;
+const selectedFaceIndices = new Set();
 
 // 3D Brush Surface Helper Ring
-const brushHelperGeo = new THREE.RingGeometry(0.05, 0.08, 32);
+const brushHelperGeo = new THREE.RingGeometry(0.04, 0.065, 32);
 const brushHelperMat = new THREE.MeshBasicMaterial({
   color: 0xf43f5e,
   side: THREE.DoubleSide,
@@ -915,13 +931,34 @@ brushHelper.visible = false;
 brushHelper.renderOrder = 999;
 scene.add(brushHelper);
 
+// 3D Painted Surface Overlay Mesh
+let brushSelectionGeo = new THREE.BufferGeometry();
+const brushSelectionMat = new THREE.MeshStandardMaterial({
+  color: 0xf43f5e,
+  emissive: 0xf43f5e,
+  emissiveIntensity: 0.6,
+  roughness: 0.25,
+  metalness: 0.1,
+  side: THREE.DoubleSide,
+  polygonOffset: true,
+  polygonOffsetFactor: -4,
+  polygonOffsetUnits: -4,
+  transparent: true,
+  opacity: 0.88
+});
+const brushSelectionMesh = new THREE.Mesh(brushSelectionGeo, brushSelectionMat);
+brushSelectionMesh.visible = false;
+brushSelectionMesh.renderOrder = 998;
+
 const brushBtn = document.getElementById('tool-brush-btn');
 const brushToolbar = document.getElementById('brush-toolbar');
+const brushFacesBadge = document.getElementById('brush-faces-badge');
+const brushModeSelect = document.getElementById('brush-mode-select');
 const brushScopeSelect = document.getElementById('brush-scope-select');
 const brushRadiusSlider = document.getElementById('brush-radius-slider');
 const brushRadiusVal = document.getElementById('brush-radius-val');
 const brushColorPicker = document.getElementById('brush-color-picker');
-const brushGroupBtn = document.getElementById('brush-group-btn');
+const brushSplitBtn = document.getElementById('brush-split-btn');
 const brushClearBtn = document.getElementById('brush-clear-btn');
 const brushCloseBtn = document.getElementById('brush-close-btn');
 
@@ -932,12 +969,18 @@ function toggleBrushMode(forceState = null) {
   brushHelper.visible = false;
 
   if (!isBrushActive) {
-    clearBrushSession();
+    clearBrushSelection();
   }
 }
 
 if (brushBtn) brushBtn.onclick = () => toggleBrushMode();
 if (brushCloseBtn) brushCloseBtn.onclick = () => toggleBrushMode(false);
+
+if (brushModeSelect) {
+  brushModeSelect.onchange = (e) => {
+    brushMode = e.target.value;
+  };
+}
 
 if (brushScopeSelect) {
   brushScopeSelect.onchange = (e) => {
@@ -949,7 +992,7 @@ if (brushRadiusSlider) {
   brushRadiusSlider.oninput = (e) => {
     brushRadius = parseFloat(e.target.value);
     if (brushRadiusVal) brushRadiusVal.innerText = `${brushRadius.toFixed(2)}m`;
-    const s = brushRadius / 0.12;
+    const s = brushRadius / 0.10;
     brushHelper.scale.set(s, s, s);
   };
 }
@@ -958,131 +1001,547 @@ if (brushColorPicker) {
   brushColorPicker.oninput = (e) => {
     brushColor = e.target.value;
     brushHelperMat.color.set(brushColor);
-    // Update currently highlighted brushed meshes
-    brushedMeshes.forEach(mesh => {
-      applyMeshHighlight(mesh, brushColor);
-    });
+    brushSelectionMat.color.set(brushColor);
+    brushSelectionMat.emissive.set(brushColor);
   };
 }
 
-function applyMeshHighlight(mesh, hex) {
-  if (!mesh) return;
-  if (!brushSavedMats.has(mesh)) {
-    brushSavedMats.set(mesh, mesh.material);
-  }
-  mesh.material = new THREE.MeshStandardMaterial({
-    color: hex,
-    roughness: 0.3,
-    metalness: 0.05,
-    emissive: hex,
-    emissiveIntensity: 0.4,
-    side: THREE.DoubleSide
-  });
-
-  const info = partsData.get(mesh);
-  if (info) {
-    const card = document.getElementById(`part-card-${info.index}`);
-    if (card) {
-      card.style.borderColor = hex;
-      card.style.background = 'rgba(244, 63, 94, 0.22)';
-    }
-  }
-}
-
-function clearBrushSession() {
-  brushedMeshes.forEach(mesh => {
-    const orig = brushSavedMats.get(mesh) || paletteMaterials.get(mesh);
-    if (orig) mesh.material = orig;
-    const info = partsData.get(mesh);
-    if (info) {
-      const card = document.getElementById(`part-card-${info.index}`);
-      if (card) {
-        card.style.borderColor = '';
-        card.style.background = '';
-      }
-    }
-  });
-  brushSavedMats.clear();
-  brushedMeshes.clear();
+function clearBrushSelection() {
+  selectedFaceIndices.clear();
   brushLockedMesh = null;
   isBrushing = false;
   controls.enabled = true;
+
+  if (brushSelectionMesh.parent) {
+    brushSelectionMesh.parent.remove(brushSelectionMesh);
+  }
+  brushSelectionMesh.visible = false;
+  brushSelectionGeo.dispose();
+  brushSelectionGeo = new THREE.BufferGeometry();
+  brushSelectionMesh.geometry = brushSelectionGeo;
+
+  if (brushFacesBadge) brushFacesBadge.innerText = '0 faces';
 }
 
-if (brushClearBtn) brushClearBtn.onclick = () => clearBrushSession();
+if (brushClearBtn) brushClearBtn.onclick = () => clearBrushSelection();
 
-// Segment Brushed Parts as One Unified Color
-if (brushGroupBtn) {
-  brushGroupBtn.onclick = () => {
-    if (brushedMeshes.size === 0) {
-      alert('Please brush a part or group of parts on the 3D model first!');
-      return;
+// Floating Modern Toast Notification
+function showToast(msg, type = 'info') {
+  const existing = document.getElementById('app-floating-toast');
+  if (existing) existing.remove();
+
+  const toast = document.createElement('div');
+  toast.id = 'app-floating-toast';
+  toast.className = 'glass';
+  const bg = type === 'success' ? 'rgba(16, 185, 129, 0.94)' :
+             type === 'warning' ? 'rgba(245, 158, 11, 0.94)' :
+             'rgba(99, 102, 241, 0.94)';
+  const shadow = type === 'success' ? 'rgba(16, 185, 129, 0.45)' :
+                 type === 'warning' ? 'rgba(245, 158, 11, 0.45)' :
+                 'rgba(99, 102, 241, 0.45)';
+
+  toast.style.cssText = `position: fixed; top: 110px; left: 50%; transform: translateX(-50%);
+    padding: 8px 18px; border-radius: 20px; font-size: 12.5px; font-weight: 700; color: #fff;
+    background: ${bg}; box-shadow: 0 4px 22px ${shadow}; border: 1px solid rgba(255,255,255,0.25);
+    z-index: 2500; pointer-events: none; animation: slide-down-fade 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    display: flex; align-items: center; gap: 8px; backdrop-filter: blur(12px);`;
+  toast.innerHTML = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => {
+    toast.style.transition = 'opacity 0.35s ease, transform 0.35s ease';
+    toast.style.opacity = '0';
+    toast.style.transform = 'translate(-50%, -10px)';
+    setTimeout(() => toast.remove(), 350);
+  }, 2800);
+}
+
+// Mesh Adjacency Cache for Semantic Feature Flood-Fill
+const meshAdjacencyCache = new WeakMap();
+
+function vertKey(pos, idx) {
+  const x = Math.round(pos.getX(idx) * 10000);
+  const y = Math.round(pos.getY(idx) * 10000);
+  const z = Math.round(pos.getZ(idx) * 10000);
+  return `${x},${y},${z}`;
+}
+
+function edgeKey(iA, iB, pos) {
+  const kA = vertKey(pos, iA);
+  const kB = vertKey(pos, iB);
+  return kA < kB ? `${kA}|${kB}` : `${kB}|${kA}`;
+}
+
+function getMeshAdjacency(geo) {
+  if (meshAdjacencyCache.has(geo)) {
+    return meshAdjacencyCache.get(geo);
+  }
+  const isIndexed = geo.index !== null;
+  const index = geo.index;
+  const pos = geo.attributes.position;
+  const totalFaces = isIndexed ? (index.count / 3) : (pos.count / 3);
+
+  const edgeToFaces = new Map();
+  const faceNormals = [];
+  const faceNeighbors = Array.from({ length: totalFaces }, () => []);
+
+  const pA = new THREE.Vector3();
+  const pB = new THREE.Vector3();
+  const pC = new THREE.Vector3();
+  const cb = new THREE.Vector3();
+  const ab = new THREE.Vector3();
+
+  for (let f = 0; f < totalFaces; f++) {
+    const i0 = isIndexed ? index.getX(f * 3) : f * 3;
+    const i1 = isIndexed ? index.getX(f * 3 + 1) : f * 3 + 1;
+    const i2 = isIndexed ? index.getX(f * 3 + 2) : f * 3 + 2;
+
+    pA.fromBufferAttribute(pos, i0);
+    pB.fromBufferAttribute(pos, i1);
+    pC.fromBufferAttribute(pos, i2);
+
+    cb.subVectors(pC, pB);
+    ab.subVectors(pA, pB);
+    const fn = new THREE.Vector3().crossVectors(cb, ab).normalize();
+    faceNormals.push(fn);
+
+    const edges = [
+      edgeKey(i0, i1, pos),
+      edgeKey(i1, i2, pos),
+      edgeKey(i2, i0, pos)
+    ];
+
+    for (const ek of edges) {
+      if (!edgeToFaces.has(ek)) edgeToFaces.set(ek, []);
+      edgeToFaces.get(ek).push(f);
     }
+  }
 
-    const unifiedHex = brushColor;
-    const count = brushedMeshes.size;
-
-    // Calculate group center for cohesive explosion if multiple parts are unified
-    const groupCenter = new THREE.Vector3();
-    brushedMeshes.forEach(mesh => {
-      const p = new THREE.Vector3();
-      mesh.getWorldPosition(p);
-      groupCenter.add(p);
-    });
-    groupCenter.divideScalar(count);
-
-    const groupDir = groupCenter.clone().sub(globalCenter);
-    if (groupDir.length() < 1e-4) groupDir.set(0, 1, 0);
-    groupDir.normalize();
-
-    brushedMeshes.forEach(mesh => {
-      const unifiedMat = new THREE.MeshStandardMaterial({
-        color: unifiedHex,
-        roughness: 0.35,
-        metalness: 0.05,
-        emissive: unifiedHex,
-        emissiveIntensity: 0.15,
-        side: THREE.DoubleSide
-      });
-
-      paletteMaterials.set(mesh, unifiedMat);
-      originalMaterials.set(mesh, cloneMaterialSafe(unifiedMat));
-      mesh.material = unifiedMat;
-
-      const info = partsData.get(mesh);
-      if (info) {
-        if (count > 1) {
-          info.explodeDirection.copy(groupDir);
-          info.name = `Grouped_${unifiedHex.replace('#', '')}`;
-        }
-        const colDot = document.getElementById(`color-dot-${info.index}`);
-        if (colDot) colDot.value = unifiedHex;
-        const card = document.getElementById(`part-card-${info.index}`);
-        if (card) {
-          card.style.borderColor = '';
-          card.style.background = '';
-          const nameSpan = card.querySelector('.part-name-text');
-          if (nameSpan && count > 1) nameSpan.innerText = info.name;
+  for (const [_, fList] of edgeToFaces.entries()) {
+    if (fList.length > 1) {
+      for (let i = 0; i < fList.length; i++) {
+        for (let j = i + 1; j < fList.length; j++) {
+          faceNeighbors[fList[i]].push(fList[j]);
+          faceNeighbors[fList[j]].push(fList[i]);
         }
       }
-    });
+    }
+  }
 
-    brushSavedMats.clear();
-    brushedMeshes.clear();
-    brushLockedMesh = null;
-
-    // Temporary floating feedback toast
-    const toast = document.createElement('div');
-    toast.className = 'glass';
-    toast.style.cssText = `position: fixed; top: 110px; left: 50%; transform: translateX(-50%);
-      padding: 8px 18px; border-radius: 20px; font-size: 12px; font-weight: 700; color: #fff;
-      background: rgba(16, 185, 129, 0.9); box-shadow: 0 4px 20px rgba(16, 185, 129, 0.4);
-      z-index: 2000; animation: slide-down-fade 0.2s ease;`;
-    toast.innerText = `✓ Segmented ${count} part(s) with unified color ${unifiedHex}`;
-    document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 2500);
-  };
+  const adjData = { totalFaces, faceNormals, faceNeighbors };
+  meshAdjacencyCache.set(geo, adjData);
+  return adjData;
 }
+
+// 1-Click Semantic Feature Flood-Fill (< 45 deg crease angle)
+function floodFillSemanticFeature(mesh, startFaceIndex) {
+  if (!mesh || !mesh.geometry) return;
+  const adj = getMeshAdjacency(mesh.geometry);
+  if (!adj || startFaceIndex < 0 || startFaceIndex >= adj.totalFaces) return;
+
+  const startNorm = adj.faceNormals[startFaceIndex];
+  const queue = [startFaceIndex];
+  const visited = new Set([startFaceIndex]);
+  selectedFaceIndices.add(startFaceIndex);
+
+  const normalThreshold = 0.707; // ~45 degree max crease threshold
+
+  while (queue.length > 0) {
+    const curr = queue.shift();
+    const currNorm = adj.faceNormals[curr];
+    const neighbors = adj.faceNeighbors[curr];
+
+    for (const nb of neighbors) {
+      if (!visited.has(nb)) {
+        visited.add(nb);
+        const nbNorm = adj.faceNormals[nb];
+        if (currNorm.dot(nbNorm) >= normalThreshold && startNorm.dot(nbNorm) >= 0.45) {
+          selectedFaceIndices.add(nb);
+          queue.push(nb);
+        }
+      }
+    }
+  }
+
+  updateBrushOverlay();
+}
+
+// Freehand Surface Area Paint with Fast Bounding Box & Anti-Bleed Filtering
+function paintFacesAtPoint(hit) {
+  if (!brushLockedMesh || !brushLockedMesh.geometry) return;
+  const geo = brushLockedMesh.geometry;
+  const isIndexed = geo.index !== null;
+  const index = geo.index;
+  const pos = geo.attributes.position;
+  const totalFaces = isIndexed ? (index.count / 3) : (pos.count / 3);
+
+  // Convert world hit point into local coordinate space of target mesh
+  const localHitPoint = brushLockedMesh.worldToLocal(hit.point.clone());
+
+  // Determine local brush radius
+  const scale = brushLockedMesh.getWorldScale(new THREE.Vector3());
+  const avgScale = (scale.x + scale.y + scale.z) / 3 || 1;
+  const localRadius = brushRadius / Math.max(avgScale, 1e-4);
+  const r2 = localRadius * localRadius;
+
+  const minX = localHitPoint.x - localRadius;
+  const maxX = localHitPoint.x + localRadius;
+  const minY = localHitPoint.y - localRadius;
+  const maxY = localHitPoint.y + localRadius;
+  const minZ = localHitPoint.z - localRadius;
+  const maxZ = localHitPoint.z + localRadius;
+
+  const hitNorm = hit.face ? hit.face.normal : new THREE.Vector3(0, 1, 0);
+
+  const pA = new THREE.Vector3();
+  const pB = new THREE.Vector3();
+  const pC = new THREE.Vector3();
+  const centroid = new THREE.Vector3();
+  const cb = new THREE.Vector3();
+  const ab = new THREE.Vector3();
+  const fn = new THREE.Vector3();
+
+  let addedAny = false;
+
+  for (let f = 0; f < totalFaces; f++) {
+    if (selectedFaceIndices.has(f)) continue;
+
+    const i0 = isIndexed ? index.getX(f * 3) : f * 3;
+    const i1 = isIndexed ? index.getX(f * 3 + 1) : f * 3 + 1;
+    const i2 = isIndexed ? index.getX(f * 3 + 2) : f * 3 + 2;
+
+    pA.fromBufferAttribute(pos, i0);
+    pB.fromBufferAttribute(pos, i1);
+    pC.fromBufferAttribute(pos, i2);
+
+    // Fast AABB early rejection
+    if ((pA.x < minX && pB.x < minX && pC.x < minX) ||
+        (pA.x > maxX && pB.x > maxX && pC.x > maxX) ||
+        (pA.y < minY && pB.y < minY && pC.y < minY) ||
+        (pA.y > maxY && pB.y > maxY && pC.y > maxY) ||
+        (pA.z < minZ && pB.z < minZ && pC.z < minZ) ||
+        (pA.z > maxZ && pB.z > maxZ && pC.z > maxZ)) {
+      continue;
+    }
+
+    centroid.set(
+      (pA.x + pB.x + pC.x) / 3,
+      (pA.y + pB.y + pC.y) / 3,
+      (pA.z + pB.z + pC.z) / 3
+    );
+
+    const dCentroid2 = centroid.distanceToSquared(localHitPoint);
+    const dMin2 = Math.min(
+      dCentroid2,
+      pA.distanceToSquared(localHitPoint),
+      pB.distanceToSquared(localHitPoint),
+      pC.distanceToSquared(localHitPoint)
+    );
+
+    if (dMin2 <= r2) {
+      // Normal alignment check (anti-backface check to prevent painting through thin walls)
+      cb.subVectors(pC, pB);
+      ab.subVectors(pA, pB);
+      fn.crossVectors(cb, ab).normalize();
+
+      if (fn.dot(hitNorm) > 0.05) {
+        selectedFaceIndices.add(f);
+        addedAny = true;
+      }
+    }
+  }
+
+  if (addedAny) {
+    updateBrushOverlay();
+  }
+}
+
+// Synchronize 3D Visual Mesh Overlay and Badge Counter
+function updateBrushOverlay() {
+  if (brushFacesBadge) {
+    brushFacesBadge.innerText = `${selectedFaceIndices.size} faces`;
+  }
+
+  if (!brushLockedMesh || selectedFaceIndices.size === 0) {
+    brushSelectionMesh.visible = false;
+    return;
+  }
+
+  const geo = brushLockedMesh.geometry;
+  const isIndexed = geo.index !== null;
+  const index = geo.index;
+  const pos = geo.attributes.position;
+  const norm = geo.attributes.normal;
+
+  const S = selectedFaceIndices.size;
+  const selPos = new Float32Array(S * 9);
+  const selNorm = norm ? new Float32Array(S * 9) : null;
+
+  let sIdx = 0;
+  for (const f of selectedFaceIndices) {
+    const i0 = isIndexed ? index.getX(f * 3) : f * 3;
+    const i1 = isIndexed ? index.getX(f * 3 + 1) : f * 3 + 1;
+    const i2 = isIndexed ? index.getX(f * 3 + 2) : f * 3 + 2;
+    const vIndices = [i0, i1, i2];
+
+    for (let v = 0; v < 3; v++) {
+      const vi = vIndices[v];
+      const pBase = sIdx * 9 + v * 3;
+      selPos[pBase] = pos.getX(vi);
+      selPos[pBase + 1] = pos.getY(vi);
+      selPos[pBase + 2] = pos.getZ(vi);
+
+      if (norm && selNorm) {
+        selNorm[pBase] = norm.getX(vi);
+        selNorm[pBase + 1] = norm.getY(vi);
+        selNorm[pBase + 2] = norm.getZ(vi);
+      }
+    }
+    sIdx++;
+  }
+
+  brushSelectionGeo.dispose();
+  brushSelectionGeo = new THREE.BufferGeometry();
+  brushSelectionGeo.setAttribute('position', new THREE.BufferAttribute(selPos, 3));
+  if (selNorm) {
+    brushSelectionGeo.setAttribute('normal', new THREE.BufferAttribute(selNorm, 3));
+  } else {
+    brushSelectionGeo.computeVertexNormals();
+  }
+  brushSelectionMesh.geometry = brushSelectionGeo;
+
+  if (brushSelectionMesh.parent !== brushLockedMesh) {
+    brushLockedMesh.add(brushSelectionMesh);
+  }
+  brushSelectionMesh.position.set(0, 0, 0);
+  brushSelectionMesh.rotation.set(0, 0, 0);
+  brushSelectionMesh.scale.set(1, 1, 1);
+  brushSelectionMesh.visible = true;
+}
+
+// Partition Geometry into Selected Sub-Mesh and Remaining Mesh
+function partitionGeometry(sourceGeo, selectedSet) {
+  const isIndexed = sourceGeo.index !== null;
+  const index = sourceGeo.index;
+  const pos = sourceGeo.attributes.position;
+  const norm = sourceGeo.attributes.normal;
+  const uv = sourceGeo.attributes.uv;
+  const color = sourceGeo.attributes.color;
+
+  const totalFaces = isIndexed ? (index.count / 3) : (pos.count / 3);
+  const S = selectedSet.size;
+  const R = totalFaces - S;
+
+  const selPos = new Float32Array(S * 9);
+  const remPos = new Float32Array(R * 9);
+
+  const selNorm = norm ? new Float32Array(S * 9) : null;
+  const remNorm = norm ? new Float32Array(R * 9) : null;
+
+  const selUv = uv ? new Float32Array(S * 6) : null;
+  const remUv = uv ? new Float32Array(R * 6) : null;
+
+  const selCol = color ? new Float32Array(S * 3 * color.itemSize) : null;
+  const remCol = color ? new Float32Array(R * 3 * color.itemSize) : null;
+
+  let sIdx = 0;
+  let rIdx = 0;
+
+  for (let f = 0; f < totalFaces; f++) {
+    const isSel = selectedSet.has(f);
+    const targetPos = isSel ? selPos : remPos;
+    const targetNorm = isSel ? selNorm : remNorm;
+    const targetUv = isSel ? selUv : remUv;
+    const targetCol = isSel ? selCol : remCol;
+    const offset = isSel ? sIdx : rIdx;
+
+    const i0 = isIndexed ? index.getX(f * 3) : f * 3;
+    const i1 = isIndexed ? index.getX(f * 3 + 1) : f * 3 + 1;
+    const i2 = isIndexed ? index.getX(f * 3 + 2) : f * 3 + 2;
+    const vertIndices = [i0, i1, i2];
+
+    for (let v = 0; v < 3; v++) {
+      const vi = vertIndices[v];
+      const pBase = offset * 9 + v * 3;
+      targetPos[pBase] = pos.getX(vi);
+      targetPos[pBase + 1] = pos.getY(vi);
+      targetPos[pBase + 2] = pos.getZ(vi);
+
+      if (norm && targetNorm) {
+        targetNorm[pBase] = norm.getX(vi);
+        targetNorm[pBase + 1] = norm.getY(vi);
+        targetNorm[pBase + 2] = norm.getZ(vi);
+      }
+
+      if (uv && targetUv) {
+        const uvBase = offset * 6 + v * 2;
+        targetUv[uvBase] = uv.getX(vi);
+        targetUv[uvBase + 1] = uv.getY(vi);
+      }
+
+      if (color && targetCol) {
+        const cBase = offset * 3 * color.itemSize + v * color.itemSize;
+        for (let c = 0; c < color.itemSize; c++) {
+          targetCol[cBase + c] = color.getComponent(vi, c);
+        }
+      }
+    }
+
+    if (isSel) sIdx++;
+    else rIdx++;
+  }
+
+  const selectedGeo = new THREE.BufferGeometry();
+  selectedGeo.setAttribute('position', new THREE.BufferAttribute(selPos, 3));
+  if (selNorm) selectedGeo.setAttribute('normal', new THREE.BufferAttribute(selNorm, 3));
+  if (selUv) selectedGeo.setAttribute('uv', new THREE.BufferAttribute(selUv, 2));
+  if (selCol) selectedGeo.setAttribute('color', new THREE.BufferAttribute(selCol, color.itemSize));
+
+  const remainingGeo = new THREE.BufferGeometry();
+  remainingGeo.setAttribute('position', new THREE.BufferAttribute(remPos, 3));
+  if (remNorm) remainingGeo.setAttribute('normal', new THREE.BufferAttribute(remNorm, 3));
+  if (remUv) remainingGeo.setAttribute('uv', new THREE.BufferAttribute(remUv, 2));
+  if (remCol) remainingGeo.setAttribute('color', new THREE.BufferAttribute(remCol, color.itemSize));
+
+  if (!selNorm) selectedGeo.computeVertexNormals();
+  if (!remNorm) remainingGeo.computeVertexNormals();
+
+  selectedGeo.computeBoundingBox();
+  selectedGeo.computeBoundingSphere();
+  remainingGeo.computeBoundingBox();
+  remainingGeo.computeBoundingSphere();
+
+  return { selectedGeo, remainingGeo };
+}
+
+// Split and Carve Brushed Surface Patch into an Independent Segmented Part
+function splitBrushedAreaAsSeparatePart() {
+  if (!brushLockedMesh || selectedFaceIndices.size === 0) {
+    showToast('⚠️ Please brush an area or flood-select a feature on the 3D model first!', 'warning');
+    return;
+  }
+
+  const parentMesh = brushLockedMesh;
+  const srcGeo = parentMesh.geometry;
+  const isIndexed = srcGeo.index !== null;
+  const totalFaces = isIndexed ? (srcGeo.index.count / 3) : (srcGeo.attributes.position.count / 3);
+
+  if (selectedFaceIndices.size >= totalFaces) {
+    showToast('⚠️ All faces of this part are selected. The entire part is already a separate part.', 'warning');
+    return;
+  }
+
+  const selectedCount = selectedFaceIndices.size;
+  const { selectedGeo, remainingGeo } = partitionGeometry(srcGeo, selectedFaceIndices);
+
+  // Update parent mesh with remaining geometry
+  parentMesh.geometry.dispose();
+  parentMesh.geometry = remainingGeo;
+  parentMesh.geometry.computeBoundingBox();
+  parentMesh.geometry.computeBoundingSphere();
+
+  // Create new mesh with chosen brush color
+  const newHex = brushColor;
+  const newMat = new THREE.MeshStandardMaterial({
+    color: newHex,
+    roughness: 0.35,
+    metalness: 0.05,
+    emissive: newHex,
+    emissiveIntensity: 0.15,
+    side: THREE.DoubleSide
+  });
+
+  const newMesh = new THREE.Mesh(selectedGeo, newMat);
+  const parentInfo = partsData.get(parentMesh);
+  const nextIdx = partsData.size;
+  const newPartName = `${parentInfo ? parentInfo.name : 'part'}_carved_${nextIdx + 1}`;
+  newMesh.name = newPartName;
+
+  newMesh.position.copy(parentMesh.position);
+  newMesh.quaternion.copy(parentMesh.quaternion);
+  newMesh.scale.copy(parentMesh.scale);
+
+  if (parentMesh.parent) {
+    parentMesh.parent.add(newMesh);
+  } else if (currentLoadedMesh) {
+    currentLoadedMesh.add(newMesh);
+  } else {
+    scene.add(newMesh);
+  }
+
+  // Calculate distinct explosion vector for new carved part
+  const worldPos = new THREE.Vector3();
+  newMesh.getWorldPosition(worldPos);
+
+  const lVec = worldPos.clone().sub(globalCenter);
+  let dist = lVec.length();
+  if (dist < 1e-4) {
+    lVec.set((Math.random() - 0.5) * 0.02, (Math.random() - 0.5) * 0.02, (Math.random() - 0.5) * 0.02);
+  }
+  lVec.normalize();
+
+  const geomCenter = new THREE.Vector3();
+  if (newMesh.geometry.boundingBox) {
+    newMesh.geometry.boundingBox.getCenter(geomCenter);
+  }
+
+  const rotAxis = new THREE.Vector3(1, (Math.random() - 0.5) * 0.6, (Math.random() - 0.5) * 0.6).normalize();
+  const rotSpeedFactor = (0.5 + Math.random()) * (Math.random() > 0.5 ? 1 : -1);
+
+  const newPartInfo = {
+    mesh: newMesh,
+    index: nextIdx,
+    name: newPartName,
+    originalLocalPosition: newMesh.position.clone(),
+    originalRotation: newMesh.quaternion.clone(),
+    originalScale: newMesh.scale.clone(),
+    explodeDirection: lVec.clone(),
+    distanceWeight: maxDistance > 0 ? (dist / maxDistance) : 1.0,
+    geometryCenterOffset: geomCenter.clone(),
+    accumulatedRotation: 0,
+    rotationAxis: rotAxis,
+    rotationSpeedFactor: rotSpeedFactor,
+    snapshotRotation: 0,
+    customOffset: new THREE.Vector3(),
+    customRotation: new THREE.Euler(),
+    customScale: 1.0,
+    visible: true
+  };
+
+  partsData.set(newMesh, newPartInfo);
+  paletteMaterials.set(newMesh, newMat);
+  originalMaterials.set(newMesh, cloneMaterialSafe(newMat));
+
+  // Recalculate parent part centroid
+  if (parentMesh.geometry.boundingBox && parentInfo) {
+    parentMesh.geometry.boundingBox.getCenter(parentInfo.geometryCenterOffset);
+  }
+
+  // Clear active brush selection and overlay
+  clearBrushSelection();
+
+  // Dynamically update parts hierarchy, quick dropdown & badge counter
+  rebuildPartsHierarchyUI();
+
+  // Select newly created part in Blender inspector
+  selectPart(newMesh);
+
+  // Update Geometry Statistics HUD
+  if (currentLoadedMesh) {
+    updateMeshStatsDisplay(calculateGeometryStats(currentLoadedMesh));
+  }
+
+  showToast(`✂️ Carved & extracted <strong>${selectedCount}</strong> faces as separate part <em>"${newPartName}"</em>!`, 'success');
+}
+
+if (brushSplitBtn) brushSplitBtn.onclick = () => splitBrushedAreaAsSeparatePart();
+
+// Hotkey: press 'B' to toggle 3D brush mode
+window.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'b' || e.key === 'B') {
+    toggleBrushMode();
+  }
+});
 
 // 3D Canvas Raycasting for Brush
 const brushRaycaster = new THREE.Raycaster();
@@ -1102,7 +1561,7 @@ function getModelIntersects(e, restrictMesh = null) {
 
   const meshes = [];
   currentLoadedMesh.traverse((child) => {
-    if (child.isMesh && child.visible && child !== brushHelper) {
+    if (child.isMesh && child.visible && child !== brushHelper && child !== brushSelectionMesh) {
       meshes.push(child);
     }
   });
@@ -1111,20 +1570,24 @@ function getModelIntersects(e, restrictMesh = null) {
 
 renderer.domElement.addEventListener('pointerdown', (e) => {
   if (!isBrushActive || e.button !== 0) return;
-  const hits = getModelIntersects(e);
+  const hits = getModelIntersects(e, (brushScope === 'part' && brushLockedMesh) ? brushLockedMesh : null);
   if (hits.length > 0) {
-    isBrushing = true;
-    controls.enabled = false; // Freeze orbit camera so user can brush without spinning viewport
-    const hitMesh = hits[0].object;
+    const hit = hits[0];
+    const hitMesh = hit.object;
 
-    if (brushScope === 'part') {
-      // ANTI-BLEED: Lock strictly onto this part/feature
+    if (!brushLockedMesh) {
       brushLockedMesh = hitMesh;
-      brushedMeshes.add(hitMesh);
-      applyMeshHighlight(hitMesh, brushColor);
+    } else if (brushScope === 'part' && hitMesh !== brushLockedMesh) {
+      // ANTI-BLEED: ignore touches on other parts
+      return;
+    }
+
+    if (brushMode === 'flood') {
+      floodFillSemanticFeature(brushLockedMesh, hit.faceIndex);
     } else {
-      brushedMeshes.add(hitMesh);
-      applyMeshHighlight(hitMesh, brushColor);
+      isBrushing = true;
+      controls.enabled = false; // Freeze orbit camera so brushing doesn't spin viewport
+      paintFacesAtPoint(hit);
     }
   }
 });
@@ -1132,29 +1595,23 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
 renderer.domElement.addEventListener('pointermove', (e) => {
   if (!isBrushActive) return;
 
-  // Position brush helper ring on model surface
-  const surfaceHits = getModelIntersects(e);
+  const surfaceHits = getModelIntersects(e, (brushScope === 'part' && brushLockedMesh) ? brushLockedMesh : null);
   if (surfaceHits.length > 0) {
     const hit = surfaceHits[0];
     brushHelper.visible = true;
     brushHelper.position.copy(hit.point).addScaledVector(hit.face.normal, 0.003);
     brushHelper.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), hit.face.normal);
 
-    if (isBrushing) {
+    if (isBrushing && brushMode === 'paint') {
       if (brushScope === 'part') {
-        // ANTI-BLEED PROTECTION:
-        // Raycast strictly against brushLockedMesh. If cursor sweeps across other meshes, DO NOT TAKE IT!
-        if (brushLockedMesh) {
-          const lockedHits = getModelIntersects(e, brushLockedMesh);
-          if (lockedHits.length > 0) {
-            brushedMeshes.add(brushLockedMesh);
-            applyMeshHighlight(brushLockedMesh, brushColor);
-          }
+        if (hit.object === brushLockedMesh) {
+          paintFacesAtPoint(hit);
         }
       } else {
-        // Multi-part grouping mode:
-        brushedMeshes.add(hit.object);
-        applyMeshHighlight(hit.object, brushColor);
+        if (hit.object !== brushLockedMesh) {
+          brushLockedMesh = hit.object;
+        }
+        paintFacesAtPoint(hit);
       }
     }
   } else {
