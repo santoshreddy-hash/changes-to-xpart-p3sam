@@ -39,34 +39,12 @@ jobs = {}
 PYTHON_EXE = sys.executable
 
 async def get_presets(request):
-    """Return available pre-existing 3D models and previously segmented outputs."""
-    presets = []
-    
-    # 1. Existing assets
-    if ASSETS_DIR.exists():
-        for glb in ASSETS_DIR.glob("*.glb"):
-            presets.append({
-                "id": glb.stem,
-                "name": glb.name,
-                "path": f"/assets/{glb.name}",
-                "type": "raw_asset"
-            })
-            
-    # 2. Existing Tripo-converted assemblies in outputs
-    for assembly_glb in OUTPUTS_DIR.glob("**/*_assembly.glb"):
-        rel_path = assembly_glb.relative_to(OUTPUTS_DIR).as_posix()
-        presets.append({
-            "id": assembly_glb.stem,
-            "name": f"Segmented: {assembly_glb.stem.replace('_assembly', '')}",
-            "path": f"/outputs/{rel_path}",
-            "type": "segmented_assembly"
-        })
-        
-    return web.json_response({"presets": presets})
+    """Return empty list - sample models removed as requested."""
+    return web.json_response({"presets": []})
 
 
 async def upload_file(request):
-    """Handle 3D model file upload."""
+    """Handle 3D model file upload and calculate mesh details (triangles, quads, vertices)."""
     reader = await request.multipart()
     field = await reader.next()
     if not field or not field.filename:
@@ -89,21 +67,55 @@ async def upload_file(request):
             size += len(chunk)
             f.write(chunk)
             
+    # Calculate detailed mesh statistics immediately
+    mesh_stats = {
+        "triangles": 0,
+        "quads": 0,
+        "faces": 0,
+        "vertices": 0,
+        "watertight": False,
+        "dimensions": [0.0, 0.0, 0.0]
+    }
+    try:
+        import trimesh
+        m = trimesh.load(str(dest_path), force="mesh")
+        if hasattr(m, "faces") and len(m.faces) > 0:
+            mesh_stats["triangles"] = int(len(m.faces))
+            mesh_stats["faces"] = int(len(m.faces))
+            mesh_stats["vertices"] = int(len(m.vertices))
+            mesh_stats["watertight"] = bool(m.is_watertight)
+            dims = (m.bounds[1] - m.bounds[0]).tolist()
+            mesh_stats["dimensions"] = [round(float(d), 3) for d in dims]
+            
+            # Detect quads (coplanar triangle pairs sharing an edge)
+            try:
+                adj = m.face_adjacency
+                dots = np.sum(m.face_normals[adj[:, 0]] * m.face_normals[adj[:, 1]], axis=1)
+                mesh_stats["quads"] = int(np.sum(dots > 0.999) // 2)
+            except Exception:
+                mesh_stats["quads"] = 0
+    except Exception as e:
+        print(f"Stats calculation error on upload: {e}")
+            
     return web.json_response({
         "status": "success",
         "filename": safe_name,
+        "original_name": field.filename,
         "path": f"/uploads/{safe_name}",
         "full_path": str(dest_path),
-        "size": size
+        "size": size,
+        "stats": mesh_stats
     })
 
 
 def run_pipeline_sync(job_id, mesh_path, params):
     """Runs the segmentation pipeline and Tripo conversion in a worker thread."""
     try:
+        t_total_start = time.perf_counter()
         jobs[job_id]["status"] = "running"
         jobs[job_id]["stage"] = "Initializing GPU & Models..."
         jobs[job_id]["progress"] = 10
+        jobs[job_id]["timings"] = {"step1": 0.0, "step2": 0.0, "step3": 0.0, "total": 0.0}
         
         mesh_p = Path(mesh_path)
         stem = mesh_p.stem
@@ -125,40 +137,50 @@ def run_pipeline_sync(job_id, mesh_path, params):
             generate_tripo_viewer_html
         )
         
+        step1_time = 0.0
+        step2_time = 0.0
+        
         if is_already_segmented:
+            t2_s = time.perf_counter()
             jobs[job_id]["stage"] = "Converting pre-segmented parts to Tripo3D multi-node assembly..."
             jobs[job_id]["progress"] = 50
-            time.sleep(0.5)
             
             part_meshes = []
             for name, geom in loaded.geometry.items():
                 if hasattr(geom, "vertices") and len(geom.vertices) > 0:
-                    xform = loaded.graph[name][0]
-                    wg = geom.copy()
-                    wg.apply_transform(xform)
+                    try:
+                        xform = loaded.graph[name][0]
+                        wg = geom.copy()
+                        wg.apply_transform(xform)
+                    except Exception:
+                        wg = geom.copy()
                     part_meshes.append(wg)
                     
-            assembly_scene = create_tripo_assembly_scene(part_meshes)
+            assembly_scene = create_tripo_assembly_scene(part_meshes, auto_clean=True, auto_seal=True)
+            step2_time = time.perf_counter() - t2_s
         else:
-            # Run segmentation pipeline
-            jobs[job_id]["stage"] = "Step 1/3: Running P3-SAM fast 3D part bounding-box estimation..."
+            # Step 1: P3-SAM
+            t1_s = time.perf_counter()
+            jobs[job_id]["stage"] = "Step 1/3: Running P3-SAM 3D feature and bounding-box estimation..."
             jobs[job_id]["progress"] = 25
             
             p3sam_script = ROOT_DIR / "P3-SAM" / "demo" / "run_p3sam_for_xpart.py"
             p3sam_out_dir = out_job_dir / "p3sam"
             p3sam_out_dir.mkdir(parents=True, exist_ok=True)
             
-            # Run P3-SAM
             cmd_p3sam = [
                 PYTHON_EXE, str(p3sam_script),
                 str(mesh_p), str(p3sam_out_dir), "4"
             ]
             env = os.environ.copy()
             env["TEMP"] = "C:\\Users\\7950x_RTX4090\\AppData\\Local\\Temp"
+            env["TMP"] = "C:\\Users\\7950x_RTX4090\\AppData\\Local\\Temp"
             env["PYTHONIOENCODING"] = "utf-8"
             env["PYTHONUTF8"] = "1"
             
             res_p3 = subprocess.run(cmd_p3sam, cwd=str(ROOT_DIR), env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            step1_time = time.perf_counter() - t1_s
+            jobs[job_id]["timings"]["step1"] = round(step1_time, 2)
             aabb_npy = p3sam_out_dir / f"{stem}_aabb.npy"
             
             # Check for face_ids from P3-SAM
@@ -166,23 +188,23 @@ def run_pipeline_sync(job_id, mesh_path, params):
             post_cands = [p for p in face_ids_cands if "final_post" in p.name]
             best_face_ids = post_cands[0] if post_cands else (face_ids_cands[0] if face_ids_cands else None)
             
+            # Step 2: Partitioning / XPart DiT
+            t2_s = time.perf_counter()
             mode = params.get("mode", "tripo_exact")
             if mode == "tripo_exact" and best_face_ids and best_face_ids.exists():
                 jobs[job_id]["stage"] = "Step 2/3: Partitioning input mesh into watertight Tripo3D manifold parts..."
-                jobs[job_id]["progress"] = 60
+                jobs[job_id]["progress"] = 65
                 
                 face_ids = np.load(best_face_ids)
                 input_mesh = trimesh.load(str(mesh_p), force="mesh")
                 unique_ids = [uid for uid in np.unique(face_ids) if uid >= 0]
                 raw_parts = [input_mesh.submesh([face_ids == uid], append=True) for uid in unique_ids]
                 
-                # Automatically deduplicate overlapping bounding boxes, merge redundant fragments, and cap open cut holes
                 assembly_scene = create_tripo_assembly_scene(raw_parts, auto_clean=True, auto_seal=True)
             else:
                 jobs[job_id]["stage"] = "Step 2/3: Running X-Part DiT diffusion & DiffDMC CUDA GPU marching cubes..."
-                jobs[job_id]["progress"] = 50
+                jobs[job_id]["progress"] = 55
                 
-                # Run XPart demo.py
                 xpart_script = ROOT_DIR / "XPart" / "demo.py"
                 cmd_xpart = [
                     PYTHON_EXE, str(xpart_script),
@@ -196,9 +218,7 @@ def run_pipeline_sync(job_id, mesh_path, params):
                     cmd_xpart.extend(["--aabb_path", str(aabb_npy)])
                     
                 res_xpart = subprocess.run(cmd_xpart, cwd=str(ROOT_DIR), env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
-                print("XPart output:\n", res_xpart.stdout[-1000:])
                 
-                # Find generated glb
                 candidates = list(out_job_dir.glob("train_cfg_*_dit_boxgpt_*.glb"))
                 if candidates:
                     generated_glb = candidates[0]
@@ -207,7 +227,12 @@ def run_pipeline_sync(job_id, mesh_path, params):
                     assembly_scene = create_tripo_assembly_scene(part_meshes, auto_clean=True, auto_seal=True)
                 else:
                     raise RuntimeError(f"XPart failed to generate output. Stderr: {res_xpart.stderr}")
+            
+            step2_time = time.perf_counter() - t2_s
+            jobs[job_id]["timings"]["step2"] = round(step2_time, 2)
 
+        # Step 3: Tripo3D Multi-Node Assembly & Wave Explosion Export
+        t3_s = time.perf_counter()
         jobs[job_id]["stage"] = "Step 3/3: Exporting Tripo3D multi-node assembly & exact explosion wave..."
         jobs[job_id]["progress"] = 85
         
@@ -227,6 +252,60 @@ def run_pipeline_sync(job_id, mesh_path, params):
             output_html_path=viewer_html_path,
             model_title=f"{stem} (Tripo3D Matching Engine)"
         )
+        step3_time = time.perf_counter() - t3_s
+        total_time = time.perf_counter() - t_total_start
+        
+        jobs[job_id]["timings"] = {
+            "step1": round(step1_time, 2),
+            "step2": round(step2_time, 2),
+            "step3": round(step3_time, 2),
+            "total": round(total_time, 2),
+            "formatted": f"{total_time:.2f}s"
+        }
+
+        # Calculate rich details for each segmented part
+        part_details = []
+        total_faces_count = 0
+        total_verts_count = 0
+        total_quads_count = 0
+        for idx, (name, geom) in enumerate(assembly_scene.geometry.items()):
+            if hasattr(geom, "faces") and len(geom.faces) > 0:
+                total_faces_count += len(geom.faces)
+                total_verts_count += len(geom.vertices)
+                dims = (geom.bounds[1] - geom.bounds[0]).tolist()
+                
+                # Check quads
+                p_quads = 0
+                try:
+                    p_adj = geom.face_adjacency
+                    p_dots = np.sum(geom.face_normals[p_adj[:, 0]] * geom.face_normals[p_adj[:, 1]], axis=1)
+                    p_quads = int(np.sum(p_dots > 0.999) // 2)
+                    total_quads_count += p_quads
+                except Exception:
+                    pass
+                
+                # Color hex
+                color_hex = "#6366f1"
+                try:
+                    if hasattr(geom.visual, "face_colors") and len(geom.visual.face_colors) > 0:
+                        fc = geom.visual.face_colors[0][:3]
+                        color_hex = f"#{int(fc[0]):02x}{int(fc[1]):02x}{int(fc[2]):02x}"
+                except Exception:
+                    pass
+                    
+                part_details.append({
+                    "id": idx,
+                    "name": name,
+                    "color": color_hex,
+                    "faces": int(len(geom.faces)),
+                    "triangles": int(len(geom.faces)),
+                    "quads": p_quads,
+                    "vertices": int(len(geom.vertices)),
+                    "watertight": bool(geom.is_watertight),
+                    "dimensions": [round(float(d), 3) for d in dims],
+                    "volume": round(float(geom.volume), 5) if geom.is_volume else 0.0,
+                    "area": round(float(geom.area), 4) if hasattr(geom, "area") else 0.0
+                })
 
         jobs[job_id]["status"] = "completed"
         jobs[job_id]["stage"] = "Pipeline Completed!"
@@ -235,7 +314,17 @@ def run_pipeline_sync(job_id, mesh_path, params):
             "assembly_glb": f"/outputs/{out_job_dir.relative_to(OUTPUTS_DIR).as_posix()}/{assembled_glb_name}",
             "exploded_glb": f"/outputs/{out_job_dir.relative_to(OUTPUTS_DIR).as_posix()}/{exploded_glb_name}",
             "viewer_html": f"/outputs/{out_job_dir.relative_to(OUTPUTS_DIR).as_posix()}/{viewer_html_name}",
-            "parts_count": len(assembly_scene.geometry)
+            "parts_count": len(assembly_scene.geometry),
+            "timing": jobs[job_id]["timings"],
+            "mesh_details": {
+                "triangles": total_faces_count,
+                "quads": total_quads_count,
+                "faces": total_faces_count,
+                "vertices": total_verts_count,
+                "parts_count": len(part_details),
+                "watertight": all(p["watertight"] for p in part_details)
+            },
+            "parts": part_details
         }
     except Exception as e:
         import traceback

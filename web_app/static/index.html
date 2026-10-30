@@ -3,14 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Tripo3D Matching 3D Segmentation & Explosion Studio</title>
+  <title>Tripo3D Matching Web Studio - 3D Segmentation, Inspection & Viewing</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/PLYLoader.js"></script>
 </head>
 <body>
 
@@ -29,10 +31,68 @@
       <div class="brand-logo">3D</div>
       <div class="brand-title">
         <h1 id="model-title-text">Tripo3D Matching Web Studio</h1>
-        <p>P3-SAM + X-Part PartFormer DiffDMC GPU Pipeline</p>
+        <p>Lossless Watertight 3D Segmentation & Editing Suite</p>
       </div>
     </div>
 
+    <!-- 3D Viewport Shading & Camera Quick Controls -->
+    <div class="view-controls-bar glass">
+      <!-- Shading Modes -->
+      <div class="tool-btn-group" title="Render Shading Mode">
+        <button id="mode-shaded" class="tool-btn active" title="Realistic PBR Shading">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg>
+          <span>Shaded</span>
+        </button>
+        <button id="mode-wireframe" class="tool-btn" title="Wireframe Overlay">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>
+          </svg>
+          <span>Wireframe</span>
+        </button>
+        <button id="mode-normals" class="tool-btn" title="Surface Normal Inspection">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>
+          </svg>
+          <span>Normals</span>
+        </button>
+        <button id="mode-xray" class="tool-btn" title="X-Ray Ghost Mode">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10" stroke-dasharray="3 3"/><circle cx="12" cy="12" r="4"/>
+          </svg>
+          <span>X-Ray</span>
+        </button>
+      </div>
+
+      <div class="bar-divider"></div>
+
+      <!-- Camera Angles -->
+      <div class="tool-btn-group">
+        <button id="cam-front" class="tool-btn" title="Front View">Front</button>
+        <button id="cam-top" class="tool-btn" title="Top View">Top</button>
+        <button id="cam-side" class="tool-btn" title="Side View">Side</button>
+        <button id="cam-iso" class="tool-btn" title="Isometric Perspective">Iso</button>
+        <button id="cam-reset" class="tool-btn" title="Reset Camera / Center Mesh">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M3 12h3M18 12h3M12 3v3M12 18v3"/></svg>
+          <span>Fit</span>
+        </button>
+        <button id="cam-turntable" class="tool-btn" title="Toggle Auto-Orbit Turntable">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          <span>Turntable</span>
+        </button>
+      </div>
+
+      <div class="bar-divider"></div>
+
+      <!-- Studio Themes -->
+      <div class="tool-btn-group">
+        <button id="theme-dark" class="theme-dot active" title="Cosmic Dark Void" style="background: #0b0d13;"></button>
+        <button id="theme-slate" class="theme-dot" title="Studio Slate" style="background: #1e293b;"></button>
+        <button id="theme-light" class="theme-dot" title="Clean Minimal White" style="background: #e2e8f0;"></button>
+        <button id="grid-toggle" class="tool-btn active" title="Toggle Ground Grid">Grid</button>
+      </div>
+    </div>
+
+    <!-- Header Actions / Export -->
     <div class="header-actions">
       <input type="file" id="file-input" accept=".glb,.obj,.ply">
       <button id="upload-btn" class="action-btn">
@@ -56,41 +116,100 @@
     </div>
   </header>
 
-  <!-- Left Drawer: Presets & Pipeline Controls -->
+  <!-- Left Drawer: Upload, Mesh Statistics HUD & Pipeline Controls -->
   <aside class="pipeline-drawer glass">
+    <!-- Upload Dropzone -->
     <div>
       <div class="section-title">
-        <span>Upload Custom Model</span>
+        <span>Load 3D Object</span>
       </div>
       <div id="sidebar-dropzone" class="upload-dropzone">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
         </svg>
-        <div class="upload-dropzone-text">Drop 3D Object Here</div>
-        <div class="upload-dropzone-subtext">or click to browse (.glb, .obj, .ply)</div>
+        <div class="upload-dropzone-text">Upload Custom 3D Object</div>
+        <div class="upload-dropzone-subtext">Drag & drop or click (.glb, .obj, .ply)</div>
       </div>
     </div>
 
-    <div>
-      <div class="section-title">
-        <span>Sample Models</span>
-        <span style="font-size: 11px; color: var(--text-muted);">Click to load</span>
+    <!-- Live Mesh Statistics & Geometry HUD Card -->
+    <div id="mesh-stats-card" class="stats-card">
+      <div class="stats-card-header">
+        <span class="stats-card-title">Mesh Geometry Details</span>
+        <span id="stat-watertight-badge" class="badge-tag watertight">Solid Watertight</span>
       </div>
-      <div id="presets-list" class="preset-chip-list">
-        <div style="font-size: 12px; color: var(--text-muted); padding: 8px;">Loading presets...</div>
+      
+      <div class="stats-grid">
+        <div class="stat-box">
+          <div class="stat-label">Triangles</div>
+          <div id="stat-triangles" class="stat-value">0</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Quads (Pairs)</div>
+          <div id="stat-quads" class="stat-value">0</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Total Faces</div>
+          <div id="stat-faces" class="stat-value">0</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Vertices</div>
+          <div id="stat-vertices" class="stat-value">0</div>
+        </div>
+      </div>
+
+      <div class="stat-row">
+        <span class="stat-sublabel">Bounding Box:</span>
+        <span id="stat-dimensions" class="stat-subval">0.00 × 0.00 × 0.00 m</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-sublabel">Parts Segmented:</span>
+        <span id="stat-parts-count" class="stat-subval">Unsegmented</span>
+      </div>
+    </div>
+
+    <!-- Pipeline Timing & Execution Stopwatch Card -->
+    <div id="pipeline-timing-card" class="timing-card">
+      <div class="timing-header">
+        <span class="timing-title">Pipeline Execution Timing</span>
+        <span id="live-stopwatch" class="stopwatch-badge">⏱️ 00:00.0s</span>
+      </div>
+
+      <div class="timing-steps-list">
+        <div class="timing-step-item">
+          <span class="step-bullet">1</span>
+          <span class="step-name">P3-SAM 3D Estimation:</span>
+          <span id="time-step1" class="step-time">-- s</span>
+        </div>
+        <div class="timing-step-item">
+          <span class="step-bullet">2</span>
+          <span class="step-name">Watertight Partitioning:</span>
+          <span id="time-step2" class="step-time">-- s</span>
+        </div>
+        <div class="timing-step-item">
+          <span class="step-bullet">3</span>
+          <span class="step-name">Tripo3D Wave Assembly:</span>
+          <span id="time-step3" class="step-time">-- s</span>
+        </div>
+      </div>
+
+      <div class="total-timing-badge">
+        <span>Total Processing Time:</span>
+        <span id="time-total" style="color: #10b981; font-weight: 700;">-- s</span>
       </div>
     </div>
 
     <hr style="border: 0; border-top: 1px solid var(--surface-border-subtle);">
 
+    <!-- Pipeline Parameters -->
     <div>
       <div class="section-title">
-        <span>Pipeline Engine</span>
+        <span>Segmentation Engine</span>
       </div>
 
       <div class="param-group" style="margin-bottom: 12px;">
         <label class="param-label">
-          <span>Segmentation Mode</span>
+          <span>Engine Pipeline</span>
           <span style="color: var(--success-green); font-family: monospace;">Watertight</span>
         </label>
         <select id="engine-mode-select" class="param-select">
@@ -110,17 +229,6 @@
         </select>
       </div>
 
-      <div class="param-group" style="margin-bottom: 12px;">
-        <label class="param-label">
-          <span>Diffusion Sampling Steps</span>
-          <span id="steps-val-display" style="font-family: monospace;">50</span>
-        </label>
-        <select id="steps-select" class="param-select">
-          <option value="50" selected>50 Steps (Maximum Quality)</option>
-          <option value="20">20 Steps (Fast Preview)</option>
-        </select>
-      </div>
-
       <div class="param-group" style="margin-bottom: 16px;">
         <label class="param-label">
           <span>Grid Resolution</span>
@@ -132,7 +240,7 @@
         </select>
       </div>
 
-      <button id="run-pipeline-btn" class="action-btn primary" style="width: 100%; justify-content: center; padding: 12px;">
+      <button id="run-pipeline-btn" class="action-btn primary" style="width: 100%; justify-content: center; padding: 13px; font-weight: 700;">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polygon points="5 3 19 12 5 21 5 3"/>
         </svg>
@@ -152,15 +260,39 @@
     </div>
   </div>
 
-  <!-- Right Drawer: Tripo3D Parts Hierarchy -->
+  <!-- Right Drawer: Parts Hierarchy & Interactive Editing -->
   <aside class="parts-drawer glass">
     <div class="parts-header">
-      <span style="font-size: 14px; font-weight: 600;">Parts Hierarchy</span>
-      <span id="part-count" class="parts-count">0 PARTS</span>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 14px; font-weight: 600;">Parts Hierarchy & Editing</span>
+        <span id="part-count" class="parts-count">0 PARTS</span>
+      </div>
+      <div class="parts-quick-actions">
+        <button id="reset-parts-btn" class="icon-tool-btn" title="Reset Part Colors & Positions">↺</button>
+        <button id="show-all-parts-btn" class="icon-tool-btn" title="Show All Parts">👁️</button>
+      </div>
     </div>
+
+    <!-- Active Part Selected Editing Box (Appears when a part is selected) -->
+    <div id="part-editor-card" class="part-editor-box" style="display: none;">
+      <div class="editor-title-row">
+        <span id="editor-part-title" style="font-weight: 600;">Part Editor</span>
+        <button id="editor-close-btn" class="icon-tool-btn">✕</button>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+        <label style="font-size: 11px; color: var(--text-muted);">Change Color:</label>
+        <input type="color" id="editor-color-picker" style="cursor: pointer; border: none; width: 32px; height: 26px; border-radius: 6px; background: none;">
+        <button id="editor-isolate-btn" class="tool-btn" style="padding: 4px 8px; font-size: 11px;">Solo Part</button>
+      </div>
+      <div class="slider-group" style="margin-top: 10px;">
+        <label style="font-size: 11px;">Displace Distance:</label>
+        <input type="range" id="editor-nudge-slider" min="0" max="1" step="0.01" value="0">
+      </div>
+    </div>
+
     <div id="parts-container" class="parts-list">
-      <div style="font-size: 12px; color: var(--text-muted); text-align: center; padding: 20px;">
-        Load a segmented model to view parts
+      <div style="font-size: 12px; color: var(--text-muted); text-align: center; padding: 24px;">
+        Upload and segment a 3D model to inspect and edit parts
       </div>
     </div>
   </aside>
@@ -183,6 +315,18 @@
         <span>3D Tumbling</span>
       </label>
     </div>
+  </div>
+
+  <!-- Empty Canvas Center Prompt (shown before any model is loaded) -->
+  <div id="empty-canvas-prompt" class="empty-prompt glass" style="display: none;">
+    <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="1.8">
+      <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+      <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+      <line x1="12" y1="22.08" x2="12" y2="12"/>
+    </svg>
+    <h3>Drop Any 3D Mesh Here</h3>
+    <p>Supports .GLB, .OBJ, and .PLY formats with instant watertight geometry inspection</p>
+    <button id="prompt-upload-btn" class="action-btn primary" style="margin-top: 14px;">Browse 3D File</button>
   </div>
 
   <!-- 3D Viewport Canvas Container -->
