@@ -660,10 +660,9 @@ document.getElementById('reset-parts-btn').onclick = () => {
 // --- SHADING MODES (PBR TEXTURED, AI PALETTE, CLAY, WIREFRAME, NORMALS, XRAY) ---
 function applyShadingMode(mode) {
   currentShadingMode = mode;
-  document.querySelectorAll('.view-controls-bar button').forEach(b => {
-    if (['mode-shaded', 'mode-palette', 'mode-clay', 'mode-wireframe', 'mode-normals', 'mode-xray'].includes(b.id)) {
-      b.classList.remove('active');
-    }
+  ['mode-shaded', 'mode-palette', 'mode-clay', 'mode-wireframe', 'mode-normals', 'mode-xray'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.classList.remove('active');
   });
   const btn = document.getElementById(`mode-${mode}`);
   if (btn) btn.classList.add('active');

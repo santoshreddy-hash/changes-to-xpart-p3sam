@@ -27,46 +27,48 @@
     <p>Supports .GLB, .OBJ, and .PLY files</p>
   </div>
 
-  <!-- Top Header Navigation -->
-  <header>
-    <div class="brand-badge glass">
-      <div class="brand-logo">3D</div>
-      <div class="brand-title">
-        <h1 id="model-title-text">Tripo3D Matching Web Studio</h1>
-        <p>Tripo3D Exact Mesh Segmentation & Multi-Node Suite</p>
+  <!-- Top Full-Width Navigation Bar -->
+  <header class="top-nav-bar glass">
+    <div class="topbar-left">
+      <div class="brand-badge-mini">
+        <div class="brand-logo-mini">3D</div>
+        <div class="brand-info-mini">
+          <h1 id="model-title-text" class="topbar-title">Tripo3D Matching Web Studio</h1>
+          <p class="topbar-sub">Tripo3D Exact Mesh Studio</p>
+        </div>
       </div>
     </div>
 
     <!-- 3D Viewport Shading & Camera Quick Controls -->
-    <div class="view-controls-bar glass">
+    <div class="topbar-center">
       <!-- Shading Modes -->
       <div class="tool-btn-group" title="Render Shading Mode">
         <button id="mode-shaded" class="tool-btn active" title="Realistic PBR Shading & Paint">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg>
           <span>Textured</span>
         </button>
         <button id="mode-palette" class="tool-btn" title="AI Segmentation Color Coding">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="10"/></svg>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="10"/></svg>
           <span>AI Palette</span>
         </button>
         <button id="mode-clay" class="tool-btn" title="Blender Studio Clay / Matcap">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>
           <span>Clay</span>
         </button>
         <button id="mode-wireframe" class="tool-btn" title="Wireframe Overlay">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>
           </svg>
           <span>Wireframe</span>
         </button>
         <button id="mode-normals" class="tool-btn" title="Surface Normal Inspection">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>
           </svg>
           <span>Normals</span>
         </button>
         <button id="mode-xray" class="tool-btn" title="X-Ray Ghost Mode">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="10" stroke-dasharray="3 3"/><circle cx="12" cy="12" r="4"/>
           </svg>
           <span>X-Ray</span>
@@ -79,10 +81,10 @@
       <div class="tool-btn-group">
         <button id="cam-proj" class="tool-btn" title="Toggle Perspective / Orthographic (Numpad 5)">Persp</button>
         <select id="cam-fov-select" class="tool-select" title="Focal Length / FOV">
-          <option value="45" selected>50mm (Standard)</option>
-          <option value="60">35mm (Wide)</option>
-          <option value="80">24mm (Ultra)</option>
-          <option value="28">85mm (Tele)</option>
+          <option value="45" selected>50mm</option>
+          <option value="60">35mm</option>
+          <option value="80">24mm</option>
+          <option value="28">85mm</option>
         </select>
         <button id="cam-front" class="tool-btn" title="Front View (Numpad 1)">Front</button>
         <button id="cam-top" class="tool-btn" title="Top View (Numpad 7)">Top</button>
@@ -107,10 +109,10 @@
         </button>
         <button id="grid-toggle" class="tool-btn active" title="Toggle Ground Grid">Grid</button>
       </div>
+    </div>
 
-      <div class="bar-divider"></div>
-
-      <!-- Recording Studio -->
+    <!-- Right: Recording & Actions -->
+    <div class="topbar-right">
       <div class="tool-btn-group">
         <button id="record-explode-btn" class="tool-btn record-action" title="Record 60 FPS Explosion Video to WebM">
           <span class="rec-icon">●</span> <span>Record Explode</span>
@@ -120,29 +122,30 @@
         </button>
         <button id="snapshot-btn" class="tool-btn" title="Capture High-Res PNG Snapshot">📸 Snapshot</button>
       </div>
-    </div>
 
-    <!-- Header Actions / Export -->
-    <div class="header-actions">
-      <input type="file" id="file-input" accept=".glb,.obj,.ply">
-      <button id="upload-btn" class="action-btn">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
-        </svg>
-        Upload 3D Mesh
-      </button>
-      <button id="download-assembly-btn" class="action-btn" title="Download Multi-Node Assembly GLB">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
-        </svg>
-        Export Assembly GLB
-      </button>
-      <button id="download-exploded-btn" class="action-btn" title="Download Pre-exploded GLB">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4"/>
-        </svg>
-        Export Exploded GLB
-      </button>
+      <div class="bar-divider"></div>
+
+      <div class="header-actions">
+        <input type="file" id="file-input" accept=".glb,.obj,.ply" style="display: none;">
+        <button id="upload-btn" class="action-btn" title="Upload 3D Mesh">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+          </svg>
+          <span>Upload</span>
+        </button>
+        <button id="download-assembly-btn" class="action-btn" title="Download Multi-Node Assembly GLB">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+          </svg>
+          <span>Assembly</span>
+        </button>
+        <button id="download-exploded-btn" class="action-btn" title="Download Pre-exploded GLB">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4"/>
+          </svg>
+          <span>Exploded</span>
+        </button>
+      </div>
     </div>
   </header>
 
