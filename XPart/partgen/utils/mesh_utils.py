@@ -446,7 +446,7 @@ def clean_and_merge_parts(parts, iou_thresh=0.80, containment_thresh=0.85):
     return merged
 
 
-def create_tripo_assembly_scene(part_meshes, names=None, colors=None, auto_clean=True, auto_seal=True):
+def create_tripo_assembly_scene(part_meshes, names=None, colors=None, auto_clean=True, auto_seal=False):
     """
     Constructs a Tripo3D-compatible multi-node trimesh.Scene.
     Every part submesh is normalized so its local vertex coordinates are centered

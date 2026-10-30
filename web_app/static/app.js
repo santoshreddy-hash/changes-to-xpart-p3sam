@@ -905,4 +905,4 @@ function animate() {
 animate();
 
 // Initial load: auto-load furn16_3k if available
-loadModelFromUrl('/outputs/furn16_3k_tripo_exact/train_cfg_-1.000000_dit_boxgpt_furn16_3k_assembly.glb', 'furn16_3k Furniture (Lossless Watertight)');
+loadModelFromUrl('/outputs/furn16_3k_tripo_exact/train_cfg_-1.000000_dit_boxgpt_furn16_3k_assembly.glb', 'furn16_3k Furniture (Tripo3D Exact)');

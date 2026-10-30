@@ -164,7 +164,7 @@ def run_pipeline_sync(job_id, mesh_path, params):
                         wg = geom.copy()
                     part_meshes.append(wg)
                     
-            assembly_scene = create_tripo_assembly_scene(part_meshes, auto_clean=True, auto_seal=True)
+            assembly_scene = create_tripo_assembly_scene(part_meshes, auto_clean=True, auto_seal=False)
             step2_time = time.perf_counter() - t2_s
         else:
             # Step 1: P3-SAM
@@ -211,7 +211,7 @@ def run_pipeline_sync(job_id, mesh_path, params):
             t2_s = time.perf_counter()
             mode = params.get("mode", "tripo_exact")
             if mode == "tripo_exact" and best_face_ids and best_face_ids.exists():
-                jobs[job_id]["stage"] = "Step 2/3: Partitioning input mesh into watertight Tripo3D manifold parts..."
+                jobs[job_id]["stage"] = "Step 2/3: Partitioning input mesh into exact Tripo3D parts..."
                 jobs[job_id]["progress"] = 65
                 
                 face_ids = np.load(best_face_ids)
@@ -270,7 +270,7 @@ def run_pipeline_sync(job_id, mesh_path, params):
                 if not raw_parts:
                     raw_parts = [target_mesh]
                     
-                assembly_scene = create_tripo_assembly_scene(raw_parts, auto_clean=True, auto_seal=True)
+                assembly_scene = create_tripo_assembly_scene(raw_parts, auto_clean=True, auto_seal=False)
             else:
                 jobs[job_id]["stage"] = "Step 2/3: Running X-Part DiT diffusion & DiffDMC CUDA GPU marching cubes..."
                 jobs[job_id]["progress"] = 55
@@ -303,7 +303,7 @@ def run_pipeline_sync(job_id, mesh_path, params):
                         part_meshes = []
                     if not part_meshes:
                         part_meshes = [trimesh.load(str(mesh_p), force="mesh")]
-                    assembly_scene = create_tripo_assembly_scene(part_meshes, auto_clean=True, auto_seal=True)
+                    assembly_scene = create_tripo_assembly_scene(part_meshes, auto_clean=True, auto_seal=False)
                 else:
                     raise RuntimeError(f"XPart failed to generate output. Stderr: {res_xpart.stderr}")
             
