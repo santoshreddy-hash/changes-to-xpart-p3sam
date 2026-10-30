@@ -1580,8 +1580,9 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
 
 if __name__ == '__main__':
     argparser = argparse.ArgumentParser()
@@ -1626,7 +1627,7 @@ if __name__ == '__main__':
             os.makedirs(_output_path, exist_ok=True)
             mesh = trimesh.load(_mesh_path, force='mesh')
             set_seed(args.seed)
-            with autocast_ctx:
+            with torch.inference_mode(), autocast_ctx:
                 aabb, face_ids, mesh = auto_mask.predict_aabb(mesh, 
                                                             save_path=_output_path, 
                                                             point_num=args.point_num, 
@@ -1645,7 +1646,7 @@ if __name__ == '__main__':
     else:     
         mesh = trimesh.load(mesh_path, force='mesh')
         set_seed(args.seed)
-        with autocast_ctx:
+        with torch.inference_mode(), autocast_ctx:
             aabb, face_ids, mesh = auto_mask.predict_aabb(mesh, 
                                                         save_path=output_path, 
                                                         point_num=args.point_num, 

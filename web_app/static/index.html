@@ -210,11 +210,11 @@
       <div class="param-group" style="margin-bottom: 12px;">
         <label class="param-label">
           <span>Engine Pipeline</span>
-          <span style="color: var(--success-green); font-family: monospace;">Solid 3D Bodies</span>
+          <span style="color: var(--success-green); font-family: monospace;">20-25s Fast SAM</span>
         </label>
         <select id="engine-mode-select" class="param-select">
-          <option value="xpart_dit" selected>X-Part DiT Diffusion (Solid Volumetric 3D Parts)</option>
-          <option value="tripo_exact">Fast Surface Partitioning (Thin Surface Cuts ~15s)</option>
+          <option value="tripo_exact" selected>Fast P3-SAM Segmentation & Assembly (Exact Tripo3D ~20-25s)</option>
+          <option value="xpart_dit">X-Part DiT Volumetric Diffusion (~80s, 50-step generative)</option>
         </select>
       </div>
 

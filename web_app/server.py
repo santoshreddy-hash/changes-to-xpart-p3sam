@@ -445,7 +445,7 @@ async def start_segmentation(request):
     }
 
     params = {
-        "mode": data.get("mode", "xpart_dit"),
+        "mode": data.get("mode", "tripo_exact"),
         "steps": int(data.get("steps", 50)),
         "resolution": int(data.get("resolution", 512)),
         "mc_algo": data.get("mc_algo", "dmc"),
