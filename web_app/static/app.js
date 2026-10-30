@@ -429,12 +429,73 @@ if (bulkJoinBtn) {
   };
 }
 
-const bulkClearBtn = document.getElementById('parts-bulk-clear-btn');
-if (bulkClearBtn) {
-  bulkClearBtn.onclick = () => {
-    checkedParts.clear();
-    updateBulkActionBar();
-    document.querySelectorAll('.part-checkbox').forEach(c => c.checked = false);
+// --- CLIENT-SIDE GLTF / GLB EXPORT ENGINE (Tripo Step 4: Export) ---
+function exportMeshToGLB(mesh, filename = 'part') {
+  if (!window.THREE || !THREE.GLTFExporter) {
+    showToast('⚠️ GLTFExporter is loading, please try again in a moment.', 'warning');
+    return;
+  }
+  const exporter = new THREE.GLTFExporter();
+  const exportScene = new THREE.Scene();
+  const clone = mesh.clone();
+  clone.position.set(0, 0, 0);
+  clone.rotation.set(0, 0, 0);
+  clone.scale.set(1, 1, 1);
+  exportScene.add(clone);
+
+  exporter.parse(
+    exportScene,
+    function (result) {
+      if (result instanceof ArrayBuffer) {
+        const blob = new Blob([result], { type: 'model/gltf-binary' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        const safeName = (filename || 'part').replace(/[^a-zA-Z0-9_-]/g, '_');
+        link.download = `${safeName}.glb`;
+        link.click();
+        URL.revokeObjectURL(link.href);
+        showToast(`📥 Successfully exported <strong>"${safeName}.glb"</strong>!`, 'success');
+      }
+    },
+    { binary: true }
+  );
+}
+
+function exportAllSegmentedParts() {
+  if (partsData.size === 0) {
+    showToast('⚠️ No segmented parts to export.', 'warning');
+    return;
+  }
+  let delay = 0;
+  partsData.forEach((info, mesh) => {
+    setTimeout(() => {
+      exportMeshToGLB(mesh, info.name);
+    }, delay);
+    delay += 350;
+  });
+  showToast(`📥 Exporting all <strong>${partsData.size}</strong> parts as individual GLB models...`, 'info');
+}
+
+const partsExportAllBtn = document.getElementById('parts-export-all-btn');
+if (partsExportAllBtn) partsExportAllBtn.onclick = () => exportAllSegmentedParts();
+
+const partsBulkExportBtn = document.getElementById('parts-bulk-export-btn');
+if (partsBulkExportBtn) {
+  partsBulkExportBtn.onclick = () => {
+    if (checkedParts.size === 0) {
+      showToast('⚠️ Please check at least one part to export.', 'warning');
+      return;
+    }
+    let delay = 0;
+    checkedParts.forEach((mesh) => {
+      const info = partsData.get(mesh);
+      const name = info ? info.name : 'part';
+      setTimeout(() => {
+        exportMeshToGLB(mesh, name);
+      }, delay);
+      delay += 350;
+    });
+    showToast(`📥 Exporting <strong>${checkedParts.size}</strong> checked parts...`, 'info');
   };
 }
 
@@ -505,9 +566,10 @@ function rebuildPartsHierarchyUI() {
         <div class="part-badge">
           <input type="checkbox" class="part-checkbox" id="part-cb-${idx}" title="Check to multi-select for Joining" ${isChecked ? 'checked' : ''}>
           <input type="color" value="${hexColor}" class="part-color-dot" id="color-dot-${idx}" title="Click to Change Part Color">
-          <span class="part-name-text">${partInfo.name}</span>
+          <input type="text" class="part-name-input" id="part-name-input-${idx}" value="${partInfo.name}" title="Click to Rename Part">
         </div>
         <div style="display: flex; gap: 4px;">
+          <button class="icon-tool-btn" id="export-part-btn-${idx}" title="📥 Export This Part as GLB">📥</button>
           <button class="icon-tool-btn" id="divide-btn-${idx}" title="⚡ Divide Disjoint Components into Multiple Parts with Different Colors">⚡</button>
           <button class="icon-tool-btn" id="solo-btn-${idx}" title="Solo / Isolate Part">🎯</button>
           <button class="icon-tool-btn" id="vis-btn-${idx}" title="Toggle Visibility">👁️</button>
@@ -533,6 +595,26 @@ function rebuildPartsHierarchyUI() {
         else checkedParts.delete(mesh);
         updateBulkActionBar();
       };
+    }
+
+    const expBtn = card.querySelector(`#export-part-btn-${idx}`);
+    if (expBtn) {
+      expBtn.onclick = (e) => {
+        e.stopPropagation();
+        exportMeshToGLB(mesh, partInfo.name);
+      };
+    }
+
+    const nameInput = card.querySelector(`#part-name-input-${idx}`);
+    if (nameInput) {
+      nameInput.onchange = (e) => {
+        partInfo.name = e.target.value.trim() || `part_${idx + 1}`;
+        mesh.name = partInfo.name;
+        updateBrushReassignDropdown();
+        const opt = document.querySelector(`#quick-part-select option[value="${idx}"]`);
+        if (opt) opt.textContent = `Part #${idx + 1}: ${partInfo.name}`;
+      };
+      nameInput.onclick = (e) => e.stopPropagation();
     }
 
     const divBtn = card.querySelector(`#divide-btn-${idx}`);
@@ -572,6 +654,8 @@ function rebuildPartsHierarchyUI() {
 
     partsContainer.appendChild(card);
   });
+
+  updateBrushReassignDropdown();
 
   if (currentLoadedMesh) {
     const modelStats = calculateGeometryStats(currentLoadedMesh);
@@ -1014,6 +1098,215 @@ const brushSelectionMat = new THREE.MeshStandardMaterial({
   opacity: 0.88
 });
 
+// --- TRIPO3D PRECISION TIERS (Simple, Balanced, Detailed) ---
+let currentPrecisionTier = 'balanced';
+
+function setPrecisionTier(tier) {
+  currentPrecisionTier = tier;
+  ['tier-simple', 'tier-balanced', 'tier-detailed'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('active');
+  });
+  const activeEl = document.getElementById(`tier-${tier}`);
+  if (activeEl) activeEl.classList.add('active');
+
+  if (partsData.size === 0) return;
+
+  saveStateToUndoStack(`Change Tier to ${tier}`);
+
+  if (tier === 'simple') {
+    applySimpleCoarseTier();
+  } else if (tier === 'detailed') {
+    applyDetailedFineTier();
+  } else {
+    showToast('⚖️ Balanced tier: standard production segmentation active.', 'info');
+  }
+}
+
+function applyDetailedFineTier() {
+  let totalDivided = 0;
+  const meshes = Array.from(partsData.keys());
+  meshes.forEach(m => {
+    if (dividePartIntoConnectedComponents(m, false)) {
+      totalDivided++;
+    }
+  });
+  stageOperation(`Detailed Tier: split into ${partsData.size} parts`);
+  showToast(`🔍 Detailed Tier active: model split into <strong>${partsData.size}</strong> fine components!`, 'success');
+}
+
+function applySimpleCoarseTier() {
+  if (partsData.size <= 2) {
+    showToast('ℹ️ Model already has minimal parts.', 'info');
+    return;
+  }
+  let totalVerts = 0;
+  partsData.forEach((info, m) => {
+    if (m.geometry.attributes.position) totalVerts += m.geometry.attributes.position.count;
+  });
+
+  const smallMeshes = [];
+  const largeMeshes = [];
+  partsData.forEach((info, m) => {
+    const vCount = m.geometry.attributes.position ? m.geometry.attributes.position.count : 0;
+    if (vCount < totalVerts * 0.08) smallMeshes.push(m);
+    else largeMeshes.push(m);
+  });
+
+  if (smallMeshes.length > 0 && largeMeshes.length > 0) {
+    smallMeshes.forEach(smallM => {
+      const sCenter = new THREE.Vector3();
+      new THREE.Box3().setFromObject(smallM).getCenter(sCenter);
+      let bestDist = Infinity;
+      let bestLarge = largeMeshes[0];
+      largeMeshes.forEach(lM => {
+        const lCenter = new THREE.Vector3();
+        new THREE.Box3().setFromObject(lM).getCenter(lCenter);
+        const d = sCenter.distanceTo(lCenter);
+        if (d < bestDist) {
+          bestDist = d;
+          bestLarge = lM;
+        }
+      });
+      mergeMeshesIntoSinglePart([bestLarge, smallM]);
+    });
+    stageOperation(`Simple Tier: consolidated into ${partsData.size} parts`);
+    showToast(`🧩 Simple Tier active: consolidated model into <strong>${partsData.size}</strong> primary parts!`, 'success');
+  } else {
+    showToast('ℹ️ Parts are already balanced.', 'info');
+  }
+}
+
+const tierSimpleBtn = document.getElementById('tier-simple');
+const tierBalancedBtn = document.getElementById('tier-balanced');
+const tierDetailedBtn = document.getElementById('tier-detailed');
+if (tierSimpleBtn) tierSimpleBtn.onclick = () => setPrecisionTier('simple');
+if (tierBalancedBtn) tierBalancedBtn.onclick = () => setPrecisionTier('balanced');
+if (tierDetailedBtn) tierDetailedBtn.onclick = () => setPrecisionTier('detailed');
+
+// --- UNDO STACK & TRIPO BOTTOM CONFIRMATION BAR ---
+const undoStack = [];
+
+function saveStateToUndoStack(actionName = 'Edit') {
+  if (partsData.size === 0) return;
+  const snapshot = [];
+  partsData.forEach((info, mesh) => {
+    let hex = '#6366f1';
+    if (mesh.material) {
+      const m = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+      if (m && m.color) hex = '#' + m.color.getHexString();
+    }
+    snapshot.push({
+      name: info.name,
+      index: info.index,
+      geometry: mesh.geometry.clone(),
+      hex: hex,
+      position: mesh.position.clone(),
+      quaternion: mesh.quaternion.clone(),
+      scale: mesh.scale.clone(),
+      originalLocalPosition: info.originalLocalPosition.clone(),
+      originalRotation: info.originalRotation.clone(),
+      originalScale: info.originalScale.clone(),
+      explodeDirection: info.explodeDirection.clone(),
+      distanceWeight: info.distanceWeight,
+      geometryCenterOffset: info.geometryCenterOffset.clone()
+    });
+  });
+  undoStack.push({ actionName, snapshot });
+  if (undoStack.length > 12) undoStack.shift();
+}
+
+function stageOperation(actionDescription) {
+  const confirmBar = document.getElementById('tripo-confirm-bar');
+  const confirmText = document.getElementById('tripo-confirm-text');
+  if (confirmBar && confirmText) {
+    confirmText.innerText = actionDescription;
+    confirmBar.style.display = 'flex';
+  }
+}
+
+function restoreFromSnapshot(snapshot) {
+  const parentObj = currentLoadedMesh || scene;
+  partsData.forEach((info, mesh) => {
+    if (mesh.parent) mesh.parent.remove(mesh);
+    if (mesh.geometry) mesh.geometry.dispose();
+  });
+  partsData.clear();
+  paletteMaterials.clear();
+  originalMaterials.clear();
+
+  snapshot.forEach(item => {
+    const mat = new THREE.MeshStandardMaterial({
+      color: item.hex,
+      roughness: 0.35,
+      metalness: 0.05,
+      emissive: item.hex,
+      emissiveIntensity: 0.15,
+      side: THREE.DoubleSide
+    });
+    const mesh = new THREE.Mesh(item.geometry, mat);
+    mesh.name = item.name;
+    mesh.position.copy(item.position);
+    mesh.quaternion.copy(item.quaternion);
+    mesh.scale.copy(item.scale);
+    parentObj.add(mesh);
+
+    const info = {
+      mesh: mesh,
+      index: item.index,
+      name: item.name,
+      originalLocalPosition: item.originalLocalPosition.clone(),
+      originalRotation: item.originalRotation.clone(),
+      originalScale: item.originalScale.clone(),
+      explodeDirection: item.explodeDirection.clone(),
+      distanceWeight: item.distanceWeight,
+      geometryCenterOffset: item.geometryCenterOffset.clone(),
+      accumulatedRotation: 0,
+      rotationAxis: new THREE.Vector3(1, 0, 0),
+      rotationSpeedFactor: 1.0,
+      snapshotRotation: 0,
+      customOffset: new THREE.Vector3(),
+      customRotation: new THREE.Euler(),
+      customScale: 1.0,
+      visible: true
+    };
+    partsData.set(mesh, info);
+    paletteMaterials.set(mesh, mat);
+    originalMaterials.set(mesh, cloneMaterialSafe(mat));
+  });
+
+  rebuildPartsHierarchyUI();
+  updateBrushReassignDropdown();
+  if (currentLoadedMesh) updateMeshStatsDisplay(calculateGeometryStats(currentLoadedMesh));
+}
+
+const confirmBtn = document.getElementById('tripo-confirm-btn');
+if (confirmBtn) {
+  confirmBtn.onclick = () => {
+    const confirmBar = document.getElementById('tripo-confirm-bar');
+    if (confirmBar) confirmBar.style.display = 'none';
+    showToast('✅ Changes confirmed and locked in Tripo workbench!', 'success');
+  };
+}
+
+const undoBtn = document.getElementById('tripo-undo-btn');
+if (undoBtn) {
+  undoBtn.onclick = () => {
+    if (undoStack.length === 0) {
+      showToast('ℹ️ No previous state to undo.', 'info');
+      return;
+    }
+    const last = undoStack.pop();
+    restoreFromSnapshot(last.snapshot);
+    const confirmBar = document.getElementById('tripo-confirm-bar');
+    if (confirmBar) confirmBar.style.display = 'none';
+    showToast(`↩️ Reverted: ${last.actionName}`, 'info');
+  };
+}
+
+// --- 3D BRUSH WORKBENCH CONTROLS & SUBMODES ---
+let brushSubMode = 'paint'; // 'paint' | 'erase'
+
 const brushBtn = document.getElementById('tool-brush-btn');
 const brushToolbar = document.getElementById('brush-toolbar');
 const brushFacesBadge = document.getElementById('brush-faces-badge');
@@ -1024,8 +1317,143 @@ const brushRadiusVal = document.getElementById('brush-radius-val');
 const brushCutBtn = document.getElementById('brush-cut-btn');
 const brushJoinBtn = document.getElementById('brush-join-btn');
 const brushSemanticBtn = document.getElementById('brush-semantic-match-btn');
+const brushInvertBtn = document.getElementById('brush-invert-btn');
 const brushClearBtn = document.getElementById('brush-clear-btn');
 const brushCloseBtn = document.getElementById('brush-close-btn');
+
+const brushSubmodePaintBtn = document.getElementById('brush-submode-paint');
+const brushSubmodeEraseBtn = document.getElementById('brush-submode-erase');
+const brushReassignSelect = document.getElementById('brush-reassign-select');
+const brushApplyReassignBtn = document.getElementById('brush-apply-reassign-btn');
+
+function setBrushSubMode(mode) {
+  brushSubMode = mode;
+  if (brushSubmodePaintBtn) brushSubmodePaintBtn.classList.toggle('active', mode === 'paint');
+  if (brushSubmodeEraseBtn) brushSubmodeEraseBtn.classList.toggle('active', mode === 'erase');
+  
+  if (brushHelperMat) {
+    brushHelperMat.color.setHex(mode === 'paint' ? 0xf43f5e : 0xeab308);
+  }
+}
+
+if (brushSubmodePaintBtn) brushSubmodePaintBtn.onclick = () => setBrushSubMode('paint');
+if (brushSubmodeEraseBtn) brushSubmodeEraseBtn.onclick = () => setBrushSubMode('erase');
+
+// Shift / Alt hotkey to erase while holding
+window.addEventListener('keydown', (e) => {
+  if (isBrushActive && (e.key === 'Shift' || e.key === 'Alt')) {
+    setBrushSubMode('erase');
+  }
+});
+window.addEventListener('keyup', (e) => {
+  if (isBrushActive && (e.key === 'Shift' || e.key === 'Alt')) {
+    setBrushSubMode('paint');
+  }
+});
+
+// Update Target Part Dropdown in Brush Bar
+function updateBrushReassignDropdown() {
+  if (!brushReassignSelect) return;
+  const currentVal = brushReassignSelect.value;
+  brushReassignSelect.innerHTML = '<option value="new">+ New Separate Part</option>';
+  let i = 1;
+  partsData.forEach((info, m) => {
+    const opt = document.createElement('option');
+    opt.value = info.index;
+    opt.textContent = `Part #${i}: ${info.name}`;
+    brushReassignSelect.appendChild(opt);
+    i++;
+  });
+  if (currentVal) brushReassignSelect.value = currentVal;
+}
+
+// Invert Selection
+if (brushInvertBtn) {
+  brushInvertBtn.onclick = () => {
+    const meshes = (brushScope === 'part' && brushLockedMesh) 
+      ? [brushLockedMesh] 
+      : Array.from(partsData.keys());
+    
+    if (meshes.length === 0) return;
+    
+    meshes.forEach(mesh => {
+      if (!selectedMeshFaces.has(mesh)) selectedMeshFaces.set(mesh, new Set());
+      const set = selectedMeshFaces.get(mesh);
+      const totalFaces = mesh.geometry.index ? (mesh.geometry.index.count / 3) : (mesh.geometry.attributes.position.count / 3);
+      for (let f = 0; f < totalFaces; f++) {
+        if (set.has(f)) set.delete(f);
+        else set.add(f);
+      }
+    });
+    updateBrushOverlay();
+    showToast('🔄 Inverted selection on model surfaces!', 'info');
+  };
+}
+
+// Reassign Brushed Faces into Target Part or New Part
+function reassignBrushedFaces() {
+  const targetVal = brushReassignSelect ? brushReassignSelect.value : 'new';
+  if (targetVal === 'new') {
+    cutOrDivideBrushedParts();
+    return;
+  }
+  
+  const targetIndex = parseInt(targetVal);
+  let targetMesh = null;
+  for (const [m, info] of partsData.entries()) {
+    if (info.index === targetIndex) {
+      targetMesh = m;
+      break;
+    }
+  }
+  
+  if (!targetMesh) {
+    showToast('⚠️ Target part not found.', 'warning');
+    return;
+  }
+
+  const activeMeshes = Array.from(selectedMeshFaces.keys()).filter(m => selectedMeshFaces.get(m).size > 0);
+  if (activeMeshes.length === 0) {
+    showToast('⚠️ Please brush faces on the model to reassign them to this part!', 'warning');
+    return;
+  }
+
+  saveStateToUndoStack(`Reassign brushed faces to ${partsData.get(targetMesh).name}`);
+
+  const piecesToMerge = [targetMesh];
+  activeMeshes.forEach(mesh => {
+    if (mesh === targetMesh) return;
+    const faceSet = selectedMeshFaces.get(mesh);
+    const totalFaces = mesh.geometry.index ? (mesh.geometry.index.count / 3) : (mesh.geometry.attributes.position.count / 3);
+    
+    if (faceSet.size >= totalFaces) {
+      piecesToMerge.push(mesh);
+    } else {
+      const { selectedGeo, remainingGeo } = partitionGeometry(mesh.geometry, faceSet);
+      mesh.geometry.dispose();
+      mesh.geometry = remainingGeo;
+      
+      const pieceMesh = new THREE.Mesh(selectedGeo, targetMesh.material);
+      pieceMesh.position.copy(mesh.position);
+      pieceMesh.quaternion.copy(mesh.quaternion);
+      pieceMesh.scale.copy(mesh.scale);
+      (mesh.parent || currentLoadedMesh).add(pieceMesh);
+      piecesToMerge.push(pieceMesh);
+    }
+  });
+
+  if (piecesToMerge.length > 1) {
+    const targetInfo = partsData.get(targetMesh);
+    const targetName = targetInfo.name;
+    const targetHex = '#' + (Array.isArray(targetMesh.material) ? targetMesh.material[0].color : targetMesh.material.color).getHexString();
+    mergeMeshesIntoSinglePart(piecesToMerge, targetName, targetHex);
+    showToast(`🎯 Reassigned brushed faces directly into <strong>"${targetName}"</strong>!`, 'success');
+    stageOperation(`Reassigned faces to "${targetName}"`);
+  }
+  clearBrushSelection();
+}
+
+if (brushApplyReassignBtn) brushApplyReassignBtn.onclick = () => reassignBrushedFaces();
 
 function toggleBrushMode(forceState = null) {
   isBrushActive = (forceState !== null) ? forceState : !isBrushActive;
@@ -1301,10 +1729,12 @@ function paintFacesOnMesh(mesh, worldHitPoint, worldHitNormal) {
   const ab = new THREE.Vector3();
   const fn = new THREE.Vector3();
 
-  let added = false;
+  let changed = false;
 
   for (let f = 0; f < totalFaces; f++) {
-    if (faceSet.has(f)) continue;
+    const isSel = faceSet.has(f);
+    if (brushSubMode === 'paint' && isSel) continue;
+    if (brushSubMode === 'erase' && !isSel) continue;
 
     const i0 = isIndexed ? index.getX(f * 3) : f * 3;
     const i1 = isIndexed ? index.getX(f * 3 + 1) : f * 3 + 1;
@@ -1344,13 +1774,18 @@ function paintFacesOnMesh(mesh, worldHitPoint, worldHitNormal) {
       fn.crossVectors(cb, ab).normalize();
 
       if (fn.dot(localHitNorm) > 0.05) {
-        faceSet.add(f);
-        added = true;
+        if (brushSubMode === 'paint') {
+          faceSet.add(f);
+          changed = true;
+        } else if (brushSubMode === 'erase') {
+          faceSet.delete(f);
+          changed = true;
+        }
       }
     }
   }
 
-  if (added) {
+  if (changed) {
     updateBrushOverlay();
   }
 }
@@ -1701,6 +2136,8 @@ function partitionGeometry(sourceGeo, selectedSet) {
 function mergeMeshesIntoSinglePart(meshesToMerge, customName = null, customHex = null) {
   if (!meshesToMerge || meshesToMerge.length < 2) return null;
 
+  saveStateToUndoStack(`Combine ${meshesToMerge.length} parts`);
+
   const parentObj = meshesToMerge[0].parent || currentLoadedMesh || scene;
 
   // Transform all meshes to common parent coordinates
@@ -1811,6 +2248,7 @@ function mergeMeshesIntoSinglePart(meshesToMerge, customName = null, customHex =
   selectPart(joinedMesh);
   if (currentLoadedMesh) updateMeshStatsDisplay(calculateGeometryStats(currentLoadedMesh));
 
+  stageOperation(`Combined ${meshesToMerge.length} parts into "${joinedName}"`);
   showToast(`🔗 Successfully joined <strong>${meshesToMerge.length}</strong> parts into <em>"${joinedName}"</em>!`, 'success');
   return joinedMesh;
 }
@@ -1845,6 +2283,8 @@ function cutOrDivideBrushedParts() {
     showToast('⚠️ Please brush on a part where you want to cut or divide it!', 'warning');
     return;
   }
+
+  saveStateToUndoStack('Separate / Cut brushed part(s)');
 
   let cutCount = 0;
   const newlyCreatedMeshes = [];
@@ -1971,6 +2411,7 @@ function cutOrDivideBrushedParts() {
     updateMeshStatsDisplay(calculateGeometryStats(currentLoadedMesh));
   }
 
+  stageOperation(`Separated / cut into ${newlyCreatedMeshes.length} new part(s)`);
   showToast(`✂️ Successfully cut part(s) into separate pieces with <strong>different vibrant colors</strong>!`, 'success');
 }
 
@@ -1991,6 +2432,8 @@ function dividePartIntoConnectedComponents(targetMesh, showInfoIfSingle = true) 
   const parentInfo = partsData.get(targetMesh);
   const baseName = parentInfo ? parentInfo.name : 'part';
   const parentObj = targetMesh.parent || currentLoadedMesh || scene;
+
+  saveStateToUndoStack(`Divide "${baseName}" into components`);
 
   parentObj.remove(targetMesh);
   partsData.delete(targetMesh);
@@ -2061,8 +2504,7 @@ function dividePartIntoConnectedComponents(targetMesh, showInfoIfSingle = true) 
   clearBrushSelection();
   rebuildPartsHierarchyUI();
   if (newMeshes.length > 0) selectPart(newMeshes[0]);
-  if (currentLoadedMesh) updateMeshStatsDisplay(calculateGeometryStats(currentLoadedMesh));
-
+  stageOperation(`Divided "${baseName}" into ${components.length} components`);
   showToast(`⚡ Divided <em>"${baseName}"</em> into <strong>${components.length}</strong> separate parts, each with a <strong>different color</strong>!`, 'success');
   return true;
 }

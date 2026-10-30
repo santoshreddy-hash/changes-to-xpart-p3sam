@@ -15,6 +15,7 @@
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/PLYLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/GLTFExporter.js"></script>
 </head>
 <body>
 
@@ -98,6 +99,13 @@
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
           <span>Turntable</span>
         </button>
+      </div>
+
+      <!-- Tripo3D Precision Tiers -->
+      <div class="tool-btn-group" title="Tripo3D Segmentation Precision Tier">
+        <button id="tier-simple" class="tool-btn" title="Simple: Coarse segmentation for quick separation">Simple</button>
+        <button id="tier-balanced" class="tool-btn active" title="Balanced: Standard production workflow">Balanced</button>
+        <button id="tier-detailed" class="tool-btn" title="Detailed: Full control over limbs, joints, and accessories">Detailed</button>
       </div>
 
       <div class="bar-divider"></div>
@@ -253,12 +261,24 @@
     </div>
   </aside>
 
-  <!-- Floating 3D Brush Segmentation Bar -->
+  <!-- Floating 3D Brush Segmentation Bar (Tripo3D Matching Interactive Workbench) -->
   <div id="brush-toolbar" class="brush-toolbar glass" style="display: none;">
     <div class="brush-tool-indicator">
       <span class="brush-dot-pulse"></span>
       <span>3D Brush</span>
       <span id="brush-faces-badge" class="brush-badge">0 faces (0 parts)</span>
+    </div>
+
+    <div class="bar-divider"></div>
+
+    <!-- Brush vs Eraser Mode Toggle (Tripo3D Studio) -->
+    <div class="tool-btn-group" title="Select Brush (paint to add) or Eraser (unpaint to remove)">
+      <button id="brush-submode-paint" class="tool-btn active" title="Brush: Paint to select faces (B)">
+        <span>🖌️ Brush</span>
+      </button>
+      <button id="brush-submode-erase" class="tool-btn" title="Eraser: Unpaint to remove faces (Shift / Alt)">
+        <span>🧹 Eraser</span>
+      </button>
     </div>
 
     <div class="bar-divider"></div>
@@ -288,26 +308,44 @@
 
     <div class="bar-divider"></div>
 
-    <!-- Feature 2: Cut / Divide into Multiple Parts with Different Colors -->
-    <button id="brush-cut-btn" class="action-btn primary" title="Cut / divide brushed region into separate parts with different colors">
+    <!-- Reassign to Target Part / New Part (Tripo Studio Reassignment) -->
+    <div class="brush-control-item">
+      <label>Assign to:</label>
+      <select id="brush-reassign-select" class="tool-select" style="max-width: 120px;" title="Target part to merge brushed faces into">
+        <option value="new">+ New Separate Part</option>
+      </select>
+      <button id="brush-apply-reassign-btn" class="tool-btn" title="Transfer brushed faces into selected target part">
+        <span>Apply</span>
+      </button>
+    </div>
+
+    <div class="bar-divider"></div>
+
+    <!-- Separate / Cut into New Part with Distinct Vibrant Color -->
+    <button id="brush-cut-btn" class="action-btn primary" title="Separate / cut brushed region into an independent part with a new vibrant color">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
         <circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/>
       </svg>
-      <span>✂️ Cut / Divide Part</span>
+      <span>✂️ Separate / Split</span>
     </button>
 
-    <!-- Feature 1: Join / Merge Segmented Parts -->
-    <button id="brush-join-btn" class="action-btn secondary" title="Join all brushed or selected parts together into one single unified part">
+    <!-- Combine / Merge Segmented Parts -->
+    <button id="brush-join-btn" class="action-btn secondary" title="Combine / merge all brushed or selected parts together into one single unified part">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
         <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
       </svg>
-      <span>🔗 Join Parts</span>
+      <span>🔗 Combine / Merge</span>
     </button>
 
     <!-- Global Semantic Feature Auto-Detection -->
     <button id="brush-semantic-match-btn" class="tool-btn" title="Scan entire 3D object to find and select all matching semantic features (symmetrical legs, handles, drawers)">
       <span>🌐 Semantic Match</span>
+    </button>
+
+    <!-- Invert Selection -->
+    <button id="brush-invert-btn" class="tool-btn" title="Invert face selection on touched parts">
+      <span>🔄 Invert</span>
     </button>
 
     <div class="bar-divider"></div>
@@ -316,6 +354,22 @@
       <span>Clear</span>
     </button>
     <button id="brush-close-btn" class="icon-tool-btn" title="Exit Brush Mode">✕</button>
+  </div>
+
+  <!-- Floating Bottom Tripo Confirmation Bar (Studio Rule: Lock in or Revert operations) -->
+  <div id="tripo-confirm-bar" class="tripo-confirm-bar glass" style="display: none;">
+    <div class="tripo-confirm-status">
+      <span class="tripo-confirm-dot"></span>
+      <span id="tripo-confirm-text">Operation staged: 0 changes</span>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button id="tripo-confirm-btn" class="action-btn primary" style="padding: 5px 12px; font-size: 11.5px;">
+        <span>✅ Confirm Changes</span>
+      </button>
+      <button id="tripo-undo-btn" class="tool-btn" style="padding: 5px 10px; font-size: 11.5px;" title="Undo last segmentation change">
+        <span>↩️ Undo</span>
+      </button>
+    </div>
   </div>
 
   <!-- Floating Pipeline Progress Banner -->
@@ -337,6 +391,7 @@
         <span id="part-count" class="parts-count">0 PARTS</span>
       </div>
       <div class="parts-quick-actions">
+        <button id="parts-export-all-btn" class="icon-tool-btn" title="Download / Export All Segmented Parts">📥</button>
         <button id="reset-parts-btn" class="icon-tool-btn" title="Reset All Part Transforms">↺</button>
         <button id="show-all-parts-btn" class="icon-tool-btn" title="Unhide All Parts">👁️</button>
         <button id="parts-dropdown-close" class="icon-tool-btn" title="Close Parts Panel">✕</button>
@@ -354,7 +409,8 @@
     <div id="parts-bulk-bar" style="display: none; align-items: center; justify-content: space-between; padding: 6px 10px; margin-bottom: 8px; background: rgba(99, 102, 241, 0.18); border: 1px solid rgba(99, 102, 241, 0.4); border-radius: 8px; font-size: 11px;">
       <span id="parts-bulk-text" style="font-weight: 600; color: #a5b4fc;">0 parts checked</span>
       <div style="display: flex; gap: 6px;">
-        <button id="parts-bulk-join-btn" class="action-btn secondary" style="padding: 3px 8px; font-size: 10.5px;">🔗 Join Selected</button>
+        <button id="parts-bulk-join-btn" class="action-btn secondary" style="padding: 3px 8px; font-size: 10.5px;">🔗 Combine Selected</button>
+        <button id="parts-bulk-export-btn" class="tool-btn" style="padding: 3px 8px; font-size: 10.5px;" title="Export selected parts">📥 Export</button>
         <button id="parts-bulk-clear-btn" class="icon-tool-btn" style="font-size: 10px;" title="Clear Checks">✕</button>
       </div>
     </div>
