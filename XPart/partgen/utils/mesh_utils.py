@@ -446,14 +446,15 @@ def clean_and_merge_parts(parts, iou_thresh=0.80, containment_thresh=0.85):
     return merged
 
 
-def create_tripo_assembly_scene(part_meshes, names=None, colors=None, auto_clean=True, auto_seal=False):
+def create_tripo_assembly_scene(part_meshes, names=None, colors=None, auto_clean=True, auto_seal=False, preserve_materials=True):
     """
     Constructs a Tripo3D-compatible multi-node trimesh.Scene.
     Every part submesh is normalized so its local vertex coordinates are centered
     around [0, 0, 0], and its world position is encoded as a Node translation
     transform matrix T_i = C_i.
-    Includes automated part deduplication (clean_and_merge_parts) and watertight
-    boundary loop capping (seal_and_cap_mesh) to prevent holes and color overlap.
+    Includes automated part deduplication (clean_and_merge_parts).
+    If preserve_materials=True, original UV textures and vertex colors are preserved
+    for already-painted models; otherwise, vibrant segmentation palette colors are assigned.
     """
     assembly = trimesh.Scene()
     valid_parts = [p for p in part_meshes if p is not None and hasattr(p, "vertices") and len(p.vertices) > 0 and hasattr(p, "faces") and len(p.faces) > 0]
@@ -465,7 +466,7 @@ def create_tripo_assembly_scene(part_meshes, names=None, colors=None, auto_clean
         node_name = names[i] if (names is not None and i < len(names)) else f"tripo_part_{i}"
         color = colors[i] if (colors is not None and i < len(colors)) else TRIPO_PALETTE[i % len(TRIPO_PALETTE)]
         
-        # Seal and cap open boundary holes
+        # Exact Tripo3D behavior: Keep exact original submesh without artificial hole filling / sealing
         p_proc = seal_and_cap_mesh(p) if auto_seal else p
         
         # Compute geometric centroid (bbox center) in world space
@@ -475,8 +476,19 @@ def create_tripo_assembly_scene(part_meshes, names=None, colors=None, auto_clean
         p_local = p_proc.copy()
         p_local.vertices = p_local.vertices - center
         
-        # Assign distinct vibrant face colors
-        p_local.visual.face_colors = color
+        # Check if the part already has textures or meaningful vertex colors
+        has_texture = hasattr(p_local, "visual") and hasattr(p_local.visual, "material") and p_local.visual.material is not None and hasattr(p_local.visual, "uv") and p_local.visual.uv is not None
+        has_vertex_colors = (
+            hasattr(p_local, "visual") and 
+            hasattr(p_local.visual, "vertex_colors") and 
+            p_local.visual.vertex_colors is not None and 
+            len(p_local.visual.vertex_colors) > 0 and 
+            float(np.std(p_local.visual.vertex_colors[:, :3])) > 2.0
+        )
+        
+        if not preserve_materials or (not has_texture and not has_vertex_colors):
+            # Assign distinct vibrant face colors for segmentation visualization
+            p_local.visual.face_colors = color
         
         # Set node transformation matrix with translation = center
         transform = np.eye(4, dtype=np.float64)

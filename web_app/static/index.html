@@ -10,6 +10,8 @@
   <link rel="stylesheet" href="/static/style.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/libs/meshopt_decoder.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/DRACOLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/PLYLoader.js"></script>
@@ -39,24 +41,32 @@
     <div class="view-controls-bar glass">
       <!-- Shading Modes -->
       <div class="tool-btn-group" title="Render Shading Mode">
-        <button id="mode-shaded" class="tool-btn active" title="Realistic PBR Shading">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg>
-          <span>Shaded</span>
+        <button id="mode-shaded" class="tool-btn active" title="Realistic PBR Shading & Paint">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg>
+          <span>Textured</span>
+        </button>
+        <button id="mode-palette" class="tool-btn" title="AI Segmentation Color Coding">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="10"/></svg>
+          <span>AI Palette</span>
+        </button>
+        <button id="mode-clay" class="tool-btn" title="Blender Studio Clay / Matcap">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>
+          <span>Clay</span>
         </button>
         <button id="mode-wireframe" class="tool-btn" title="Wireframe Overlay">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>
           </svg>
           <span>Wireframe</span>
         </button>
         <button id="mode-normals" class="tool-btn" title="Surface Normal Inspection">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>
           </svg>
           <span>Normals</span>
         </button>
         <button id="mode-xray" class="tool-btn" title="X-Ray Ghost Mode">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="10" stroke-dasharray="3 3"/><circle cx="12" cy="12" r="4"/>
           </svg>
           <span>X-Ray</span>
@@ -65,30 +75,50 @@
 
       <div class="bar-divider"></div>
 
-      <!-- Camera Angles -->
+      <!-- Camera Projection & FOV -->
       <div class="tool-btn-group">
-        <button id="cam-front" class="tool-btn" title="Front View">Front</button>
-        <button id="cam-top" class="tool-btn" title="Top View">Top</button>
-        <button id="cam-side" class="tool-btn" title="Side View">Side</button>
-        <button id="cam-iso" class="tool-btn" title="Isometric Perspective">Iso</button>
-        <button id="cam-reset" class="tool-btn" title="Reset Camera / Center Mesh">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M3 12h3M18 12h3M12 3v3M12 18v3"/></svg>
+        <button id="cam-proj" class="tool-btn" title="Toggle Perspective / Orthographic (Numpad 5)">Persp</button>
+        <select id="cam-fov-select" class="tool-select" title="Focal Length / FOV">
+          <option value="45" selected>50mm (Standard)</option>
+          <option value="60">35mm (Wide)</option>
+          <option value="80">24mm (Ultra)</option>
+          <option value="28">85mm (Tele)</option>
+        </select>
+        <button id="cam-front" class="tool-btn" title="Front View (Numpad 1)">Front</button>
+        <button id="cam-top" class="tool-btn" title="Top View (Numpad 7)">Top</button>
+        <button id="cam-side" class="tool-btn" title="Side View (Numpad 3)">Side</button>
+        <button id="cam-iso" class="tool-btn" title="Isometric (Numpad 0)">Iso</button>
+        <button id="cam-reset" class="tool-btn" title="Fit & Center Model (Numpad .)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M3 12h3M18 12h3M12 3v3M12 18v3"/></svg>
           <span>Fit</span>
         </button>
-        <button id="cam-turntable" class="tool-btn" title="Toggle Auto-Orbit Turntable">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+        <button id="cam-turntable" class="tool-btn" title="Toggle 360 Turntable Orbit">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
           <span>Turntable</span>
         </button>
       </div>
 
       <div class="bar-divider"></div>
 
-      <!-- Studio Themes -->
+      <!-- Studio Lighting & Settings -->
       <div class="tool-btn-group">
-        <button id="theme-dark" class="theme-dot active" title="Cosmic Dark Void" style="background: #0b0d13;"></button>
-        <button id="theme-slate" class="theme-dot" title="Studio Slate" style="background: #1e293b;"></button>
-        <button id="theme-light" class="theme-dot" title="Clean Minimal White" style="background: #e2e8f0;"></button>
+        <button id="studio-toggle-btn" class="tool-btn" title="Blender Studio & Lighting Settings">
+          <span>⚙️ Studio</span>
+        </button>
         <button id="grid-toggle" class="tool-btn active" title="Toggle Ground Grid">Grid</button>
+      </div>
+
+      <div class="bar-divider"></div>
+
+      <!-- Recording Studio -->
+      <div class="tool-btn-group">
+        <button id="record-explode-btn" class="tool-btn record-action" title="Record 60 FPS Explosion Video to WebM">
+          <span class="rec-icon">●</span> <span>Record Explode</span>
+        </button>
+        <button id="record-turntable-btn" class="tool-btn record-action" title="Record 360 Turntable Video">
+          <span class="rec-icon">●</span> <span>Record 360°</span>
+        </button>
+        <button id="snapshot-btn" class="tool-btn" title="Capture High-Res PNG Snapshot">📸 Snapshot</button>
       </div>
     </div>
 
@@ -209,6 +239,17 @@
 
       <div class="param-group" style="margin-bottom: 12px;">
         <label class="param-label">
+          <span>Paint & Material Mode</span>
+          <span style="color: var(--success-green); font-family: monospace;">Authentic PBR</span>
+        </label>
+        <select id="paint-mode-select" class="param-select">
+          <option value="preserve" selected>Keep Original Paint & Textures (Photorealistic)</option>
+          <option value="palette">AI Color-Coded Segments (Vibrant Palette)</option>
+        </select>
+      </div>
+
+      <div class="param-group" style="margin-bottom: 12px;">
+        <label class="param-label">
           <span>Engine Pipeline</span>
           <span style="color: var(--success-green); font-family: monospace;">20-25s Fast SAM</span>
         </label>
@@ -268,25 +309,64 @@
         <span id="part-count" class="parts-count">0 PARTS</span>
       </div>
       <div class="parts-quick-actions">
-        <button id="reset-parts-btn" class="icon-tool-btn" title="Reset Part Colors & Positions">↺</button>
-        <button id="show-all-parts-btn" class="icon-tool-btn" title="Show All Parts">👁️</button>
+        <button id="reset-parts-btn" class="icon-tool-btn" title="Reset All Part Transforms">↺</button>
+        <button id="show-all-parts-btn" class="icon-tool-btn" title="Unhide All Parts">👁️</button>
       </div>
     </div>
 
-    <!-- Active Part Selected Editing Box (Appears when a part is selected) -->
+    <!-- Active Part Selected Editing Box (Blender Transform & Material Controls) -->
     <div id="part-editor-card" class="part-editor-box" style="display: none;">
       <div class="editor-title-row">
-        <span id="editor-part-title" style="font-weight: 600;">Part Editor</span>
+        <span id="editor-part-title" style="font-weight: 700; color: #818cf8;">Part Editor</span>
         <button id="editor-close-btn" class="icon-tool-btn">✕</button>
       </div>
-      <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
-        <label style="font-size: 11px; color: var(--text-muted);">Change Color:</label>
-        <input type="color" id="editor-color-picker" style="cursor: pointer; border: none; width: 32px; height: 26px; border-radius: 6px; background: none;">
-        <button id="editor-isolate-btn" class="tool-btn" style="padding: 4px 8px; font-size: 11px;">Solo Part</button>
+      
+      <div class="editor-quick-row" style="display: flex; gap: 6px; margin: 8px 0;">
+        <button id="editor-isolate-btn" class="tool-btn" style="flex: 1; padding: 4px 6px; font-size: 11px;">Solo</button>
+        <button id="editor-hide-btn" class="tool-btn" style="flex: 1; padding: 4px 6px; font-size: 11px;">Hide</button>
+        <button id="editor-reset-btn" class="tool-btn" style="flex: 1; padding: 4px 6px; font-size: 11px;">Reset</button>
       </div>
-      <div class="slider-group" style="margin-top: 10px;">
-        <label style="font-size: 11px;">Displace Distance:</label>
-        <input type="range" id="editor-nudge-slider" min="0" max="1" step="0.01" value="0">
+
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px;">
+        <label style="font-size: 11px; color: var(--text-muted);">Custom Color:</label>
+        <input type="color" id="editor-color-picker" style="cursor: pointer; border: none; width: 32px; height: 24px; border-radius: 6px; background: none;">
+      </div>
+
+      <!-- Blender Nudge X, Y, Z -->
+      <div class="editor-section-title">Nudge Position (X, Y, Z)</div>
+      <div class="slider-group-mini">
+        <label>X: <span id="val-nudge-x">0.00</span></label>
+        <input type="range" id="editor-nudge-x" min="-1" max="1" step="0.005" value="0">
+      </div>
+      <div class="slider-group-mini">
+        <label>Y: <span id="val-nudge-y">0.00</span></label>
+        <input type="range" id="editor-nudge-y" min="-1" max="1" step="0.005" value="0">
+      </div>
+      <div class="slider-group-mini">
+        <label>Z: <span id="val-nudge-z">0.00</span></label>
+        <input type="range" id="editor-nudge-z" min="-1" max="1" step="0.005" value="0">
+      </div>
+
+      <!-- Blender Rotation & Scale -->
+      <div class="editor-section-title">Rotation & Scale</div>
+      <div class="slider-group-mini">
+        <label>Rot Y: <span id="val-rot-y">0°</span></label>
+        <input type="range" id="editor-rot-y" min="-180" max="180" step="1" value="0">
+      </div>
+      <div class="slider-group-mini">
+        <label>Scale: <span id="val-scale">1.00x</span></label>
+        <input type="range" id="editor-scale" min="0.2" max="2.5" step="0.05" value="1.0">
+      </div>
+
+      <!-- Material Properties -->
+      <div class="editor-section-title">Material Properties</div>
+      <div class="slider-group-mini">
+        <label>Roughness: <span id="val-roughness">0.5</span></label>
+        <input type="range" id="editor-roughness" min="0" max="1" step="0.05" value="0.5">
+      </div>
+      <div class="slider-group-mini">
+        <label>Metalness: <span id="val-metalness">0.1</span></label>
+        <input type="range" id="editor-metalness" min="0" max="1" step="0.05" value="0.1">
       </div>
     </div>
 
@@ -327,6 +407,46 @@
     <h3>Drop Any 3D Mesh Here</h3>
     <p>Supports .GLB, .OBJ, and .PLY formats with instant Tripo3D geometry inspection</p>
     <button id="prompt-upload-btn" class="action-btn primary" style="margin-top: 14px;">Browse 3D File</button>
+  </div>
+
+  <!-- Floating Blender Studio & Lighting Settings Panel -->
+  <div id="studio-settings-panel" class="studio-settings-panel glass" style="display: none;">
+    <div class="panel-header">
+      <span>Blender Studio Settings</span>
+      <button id="studio-close-btn" class="icon-tool-btn">✕</button>
+    </div>
+    
+    <div class="panel-group">
+      <label class="panel-label">Studio Lighting Preset</label>
+      <select id="light-preset-select" class="param-select">
+        <option value="studio" selected>Blender Studio (Balanced Key/Fill/Rim)</option>
+        <option value="warm">Warm Cinematic Key</option>
+        <option value="cyber">Cool Cyber Accent</option>
+        <option value="contrast">High Contrast Hard Shadows</option>
+        <option value="flat">Flat Inspection (Shadowless)</option>
+      </select>
+    </div>
+
+    <div class="panel-group">
+      <label class="panel-label">Light Intensity: <span id="val-light-intensity">1.2x</span></label>
+      <input type="range" id="light-intensity-slider" min="0.2" max="3.0" step="0.1" value="1.2">
+    </div>
+
+    <div class="panel-group">
+      <label class="panel-label">Viewport Background</label>
+      <div class="theme-row" style="display: flex; gap: 8px; margin-top: 4px;">
+        <button id="bg-blender" class="theme-chip" style="background: #282828;" title="Blender Dark (#282828)">Blender Dark</button>
+        <button id="bg-black" class="theme-chip active" style="background: #080a0e;" title="Pitch Dark (#080a0e)">Void</button>
+        <button id="bg-slate" class="theme-chip" style="background: #1e293b;" title="Studio Slate (#1e293b)">Slate</button>
+        <button id="bg-white" class="theme-chip" style="background: #f1f5f9; color: #1e293b;" title="Clean Light (#f1f5f9)">Light</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Live Recording Status Badge -->
+  <div id="recording-badge" class="recording-badge" style="display: none;">
+    <span class="rec-dot-pulse"></span>
+    <span id="recording-status-text">REC 00:00</span>
   </div>
 
   <!-- 3D Viewport Canvas Container -->

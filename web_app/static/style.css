@@ -67,10 +67,11 @@ header {
 .brand-badge {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 10px 18px;
+  gap: 12px;
+  padding: 8px 16px;
   border-radius: 16px;
   pointer-events: auto;
+  max-width: 330px;
 }
 
 .brand-logo {
@@ -79,6 +80,7 @@ header {
   justify-content: center;
   width: 34px;
   height: 34px;
+  min-width: 34px;
   background: linear-gradient(135deg, #6366f1, #a855f7);
   border-radius: 10px;
   font-weight: 800;
@@ -87,16 +89,26 @@ header {
   box-shadow: 0 4px 16px var(--accent-purple-glow);
 }
 
+.brand-title {
+  overflow: hidden;
+}
+
 .brand-title h1 {
-  font-size: 15px;
+  font-size: 13.5px;
   font-weight: 700;
   letter-spacing: -0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .brand-title p {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--text-secondary);
   font-family: 'JetBrains Mono', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 3D Viewport Controls Bar (Floating Top-Center) */
@@ -209,7 +221,7 @@ header {
 /* Left Panel (Pipeline & Statistics Controls) */
 .pipeline-drawer {
   position: absolute;
-  top: 76px;
+  top: 80px;
   left: 20px;
   width: 330px;
   border-radius: 20px;
@@ -218,7 +230,7 @@ header {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  max-height: calc(100vh - 110px);
+  max-height: calc(100vh - 105px);
   overflow-y: auto;
 }
 
@@ -828,4 +840,188 @@ header {
 /* Hidden file input */
 #file-input {
   display: none;
+}
+
+/* Tool Select Dropdowns in Top Bar */
+.tool-select {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  color: #fff;
+  font-size: 11px;
+  padding: 4px 8px;
+  outline: none;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.tool-select:hover, .tool-select:focus {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: #6366f1;
+}
+
+.tool-select option {
+  background: #18181b;
+  color: #fff;
+}
+
+/* Recording Action Buttons */
+.tool-btn.record-action {
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.3);
+}
+
+.tool-btn.record-action:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: #ef4444;
+}
+
+.rec-icon {
+  color: #ef4444;
+  font-size: 12px;
+  animation: pulse-red 1.2s infinite;
+}
+
+@keyframes pulse-red {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+
+/* Floating Live Recording Badge */
+.recording-badge {
+  position: fixed;
+  top: 76px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(239, 68, 68, 0.9);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+  padding: 8px 18px;
+  border-radius: 20px;
+  box-shadow: 0 0 24px rgba(239, 68, 68, 0.6);
+  z-index: 1000;
+  backdrop-filter: blur(8px);
+}
+
+.rec-dot-pulse {
+  width: 10px;
+  height: 10px;
+  background: #fff;
+  border-radius: 50%;
+  animation: pulse-red 0.8s infinite;
+}
+
+/* Mini Slider Groups for Blender Part Inspector */
+.editor-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+  margin-top: 10px;
+  margin-bottom: 4px;
+}
+
+.slider-group-mini {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 5px;
+}
+
+.slider-group-mini label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.slider-group-mini label span {
+  font-family: 'JetBrains Mono', monospace;
+  color: #818cf8;
+}
+
+.slider-group-mini input[type="range"] {
+  width: 100%;
+  height: 4px;
+  -webkit-appearance: none;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+  outline: none;
+}
+
+.slider-group-mini input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #6366f1;
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.5);
+}
+
+/* Floating Studio Settings Panel */
+.studio-settings-panel {
+  position: fixed;
+  top: 76px;
+  left: 360px;
+  width: 320px;
+  background: rgba(18, 19, 22, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+  z-index: 500;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 14px;
+}
+
+.panel-group {
+  margin-bottom: 12px;
+}
+
+.panel-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.panel-label span {
+  font-family: 'JetBrains Mono', monospace;
+  color: #818cf8;
+}
+
+.theme-chip {
+  flex: 1;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: center;
+}
+
+.theme-chip:hover, .theme-chip.active {
+  border-color: #6366f1;
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.4);
 }

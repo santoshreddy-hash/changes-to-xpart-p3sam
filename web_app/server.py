@@ -164,7 +164,7 @@ def run_pipeline_sync(job_id, mesh_path, params):
                         wg = geom.copy()
                     part_meshes.append(wg)
                     
-            assembly_scene = create_tripo_assembly_scene(part_meshes, auto_clean=True, auto_seal=False)
+            assembly_scene = create_tripo_assembly_scene(part_meshes, auto_clean=True, auto_seal=False, preserve_materials=params.get("preserve_materials", True))
             step2_time = time.perf_counter() - t2_s
         else:
             # Step 1: P3-SAM
@@ -216,45 +216,85 @@ def run_pipeline_sync(job_id, mesh_path, params):
                 
                 face_ids = np.load(best_face_ids)
                 
-                # Locate the corresponding mesh processed by P3-SAM
-                mesh_cands = []
-                comp_glb = best_face_ids.with_name(best_face_ids.name.replace("_face_ids.npy", ".glb"))
-                if comp_glb.exists():
-                    mesh_cands.append(comp_glb)
-                mesh_cands.extend([
+                # Check if the original uploaded mesh has paint / PBR textures / vertex colors
+                orig_mesh = trimesh.load(str(mesh_p), force="mesh")
+                is_painted = (
+                    hasattr(orig_mesh, "visual") and (
+                        isinstance(orig_mesh.visual, trimesh.visual.TextureVisuals) or
+                        (hasattr(orig_mesh.visual, "material") and orig_mesh.visual.material is not None) or
+                        (hasattr(orig_mesh.visual, "vertex_colors") and orig_mesh.visual.vertex_colors is not None and len(orig_mesh.visual.vertex_colors) > 0 and float(np.std(orig_mesh.visual.vertex_colors[:, :3])) > 2.0)
+                    )
+                )
+                
+                # Always preserve user's original textured mesh as target_mesh if painted or requested
+                should_preserve = params.get("preserve_materials", True) and is_painted
+                
+                # Locate candidate mesh matching face_ids
+                cand_mesh = None
+                mesh_cands = [
+                    best_face_ids.with_name(best_face_ids.name.replace("_face_ids.npy", ".glb")),
                     p3sam_out_dir / "p3sam_cleaned_mesh.glb",
                     p3sam_out_dir / "auto_mask_mesh_final_post.glb",
                     p3sam_out_dir / "auto_mask_mesh_final.glb",
                     p3sam_out_dir / "auto_mask_mesh_org.glb",
-                    p3sam_out_dir / "auto_mask_mesh.glb",
-                    mesh_p
-                ])
-                
-                target_mesh = None
+                    p3sam_out_dir / "auto_mask_mesh.glb"
+                ]
                 for cand in mesh_cands:
                     if cand and cand.exists():
                         try:
                             m = trimesh.load(str(cand), force="mesh")
                             if hasattr(m, "faces") and len(m.faces) == len(face_ids):
-                                target_mesh = m
-                                logger.info(f"Matched segmentation mesh: {cand.name} with {len(m.faces)} faces")
+                                cand_mesh = m
+                                logger.info(f"Matched P3-SAM mesh: {cand.name} ({len(m.faces)} faces)")
                                 break
                         except Exception:
                             continue
                             
-                if target_mesh is None:
-                    target_mesh = trimesh.load(str(mesh_p), force="mesh")
-                
-                # Resilient alignment: ensure face_ids dimension strictly matches target_mesh.faces
+                if should_preserve or cand_mesh is None:
+                    target_mesh = orig_mesh
+                    logger.info(f"Using original input mesh ({len(target_mesh.faces)} faces) to retain authentic paint & textures")
+                else:
+                    target_mesh = cand_mesh
+                    
+                # High-fidelity KDTree mapping if face counts differ
                 num_faces = len(target_mesh.faces)
                 if len(face_ids) != num_faces:
-                    logger.warning(f"Aligning face_ids length ({len(face_ids)}) to target mesh faces ({num_faces})")
-                    if len(face_ids) < num_faces:
-                        padded = np.full(num_faces, -1, dtype=face_ids.dtype)
-                        padded[:len(face_ids)] = face_ids
-                        face_ids = padded
-                    else:
-                        face_ids = face_ids[:num_faces]
+                    logger.warning(f"Face count mismatch: face_ids has {len(face_ids)}, target has {num_faces}. Projecting via 3D KDTree...")
+                    try:
+                        from scipy.spatial import cKDTree
+                        if cand_mesh is not None and len(cand_mesh.faces) == len(face_ids):
+                            src_centers = cand_mesh.triangles.mean(axis=1)
+                        else:
+                            src_centers = target_mesh.triangles.mean(axis=1)[:len(face_ids)]
+                        dst_centers = target_mesh.triangles.mean(axis=1)
+                        tree = cKDTree(src_centers)
+                        _, nearest = tree.query(dst_centers)
+                        face_ids = face_ids[nearest]
+                        logger.info("Successfully projected face_ids to target mesh faces using KDTree.")
+                    except Exception as kerr:
+                        logger.error(f"KDTree projection error: {kerr}, falling back to slice/pad")
+                        if len(face_ids) < num_faces:
+                            padded = np.full(num_faces, -1, dtype=face_ids.dtype)
+                            padded[:len(face_ids)] = face_ids
+                            face_ids = padded
+                        else:
+                            face_ids = face_ids[:num_faces]
+                            
+                # Fix any unassigned faces (negative IDs) so NO faces or holes are dropped!
+                unassigned = (face_ids < 0)
+                if np.any(unassigned) and np.any(~unassigned):
+                    num_un = int(np.sum(unassigned))
+                    logger.info(f"Assigning {num_un} unassigned/boundary faces to nearest neighbor parts...")
+                    try:
+                        from scipy.spatial import cKDTree
+                        centers = target_mesh.triangles.mean(axis=1)
+                        valid_idx = np.where(~unassigned)[0]
+                        unassigned_idx = np.where(unassigned)[0]
+                        tree = cKDTree(centers[valid_idx])
+                        _, nearest = tree.query(centers[unassigned_idx])
+                        face_ids[unassigned_idx] = face_ids[valid_idx[nearest]]
+                    except Exception as err:
+                        logger.warning(f"Could not fill unassigned faces: {err}")
                         
                 unique_ids = [uid for uid in np.unique(face_ids) if uid >= 0]
                 raw_parts = []
@@ -270,7 +310,12 @@ def run_pipeline_sync(job_id, mesh_path, params):
                 if not raw_parts:
                     raw_parts = [target_mesh]
                     
-                assembly_scene = create_tripo_assembly_scene(raw_parts, auto_clean=True, auto_seal=False)
+                assembly_scene = create_tripo_assembly_scene(
+                    raw_parts,
+                    auto_clean=False,
+                    auto_seal=False,
+                    preserve_materials=should_preserve
+                )
             else:
                 jobs[job_id]["stage"] = "Step 2/3: Running X-Part DiT diffusion & DiffDMC CUDA GPU marching cubes..."
                 jobs[job_id]["progress"] = 55
@@ -303,7 +348,7 @@ def run_pipeline_sync(job_id, mesh_path, params):
                         part_meshes = []
                     if not part_meshes:
                         part_meshes = [trimesh.load(str(mesh_p), force="mesh")]
-                    assembly_scene = create_tripo_assembly_scene(part_meshes, auto_clean=True, auto_seal=False)
+                    assembly_scene = create_tripo_assembly_scene(part_meshes, auto_clean=True, auto_seal=False, preserve_materials=params.get("preserve_materials", True))
                 else:
                     raise RuntimeError(f"XPart failed to generate output. Stderr: {res_xpart.stderr}")
             
@@ -416,7 +461,15 @@ def run_pipeline_sync(job_id, mesh_path, params):
 
 async def start_segmentation(request):
     """Trigger the pipeline segmentation job."""
-    data = await request.json()
+    try:
+        data = await request.json()
+    except Exception as ex:
+        try:
+            raw = await request.text()
+            data = json.loads(raw)
+        except Exception:
+            return web.json_response({"error": f"Invalid JSON payload: {ex}"}, status=400)
+            
     mesh_path = data.get("mesh_path")
     if not mesh_path:
         return web.json_response({"error": "mesh_path is required"}, status=400)
@@ -449,7 +502,8 @@ async def start_segmentation(request):
         "steps": int(data.get("steps", 50)),
         "resolution": int(data.get("resolution", 512)),
         "mc_algo": data.get("mc_algo", "dmc"),
-        "explosion_scale": float(data.get("explosion_scale", 0.35))
+        "explosion_scale": float(data.get("explosion_scale", 0.35)),
+        "preserve_materials": bool(data.get("preserve_materials", True))
     }
 
     loop = asyncio.get_event_loop()

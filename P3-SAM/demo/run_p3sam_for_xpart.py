@@ -21,6 +21,22 @@ am = mod.AutoMask(ckpt_path=None)
 prompt_bs = int(os.environ.get("P3SAM_PROMPT_BS", sys.argv[3] if len(sys.argv) > 3 else "8"))
 print(f"Running P3-SAM with prompt_bs = {prompt_bs}")
 
+# Check if mesh is already painted or textured
+is_painted = (
+    hasattr(mesh, "visual") and (
+        isinstance(mesh.visual, trimesh.visual.TextureVisuals) or
+        (hasattr(mesh.visual, "material") and mesh.visual.material is not None) or
+        (hasattr(mesh.visual, "vertex_colors") and mesh.visual.vertex_colors is not None and len(mesh.visual.vertex_colors) > 0 and float(np.std(mesh.visual.vertex_colors[:, :3])) > 2.0)
+    )
+)
+clean_flag_env = os.environ.get("P3SAM_CLEAN_MESH", "auto")
+if clean_flag_env == "auto":
+    clean_mesh_flag = not is_painted
+else:
+    clean_mesh_flag = clean_flag_env.lower() in ("1", "true", "yes")
+
+print(f"Mesh painted status: {is_painted}, clean_mesh_flag = {clean_mesh_flag}")
+
 torch.cuda.synchronize()
 t0 = time.perf_counter()
 with torch.autocast("cuda", dtype=torch.bfloat16):
@@ -28,7 +44,7 @@ with torch.autocast("cuda", dtype=torch.bfloat16):
         (am.model, am.model), mesh.copy(), out_dir,
         point_num=100000, prompt_num=400,
         save_mid_res=False, show_info=True,
-        post_process=True, clean_mesh_flag=True, seed=42,
+        post_process=True, clean_mesh_flag=clean_mesh_flag, seed=42,
         prompt_bs=prompt_bs,
         loop_mode="opt3", nms_mode="fast", cleanup_mode="fast",
     )
