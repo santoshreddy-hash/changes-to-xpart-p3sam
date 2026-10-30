@@ -198,10 +198,61 @@ def run_pipeline_sync(job_id, mesh_path, params):
                 jobs[job_id]["progress"] = 65
                 
                 face_ids = np.load(best_face_ids)
-                input_mesh = trimesh.load(str(mesh_p), force="mesh")
-                unique_ids = [uid for uid in np.unique(face_ids) if uid >= 0]
-                raw_parts = [input_mesh.submesh([face_ids == uid], append=True) for uid in unique_ids]
                 
+                # Locate the corresponding mesh processed by P3-SAM
+                mesh_cands = []
+                comp_glb = best_face_ids.with_name(best_face_ids.name.replace("_face_ids.npy", ".glb"))
+                if comp_glb.exists():
+                    mesh_cands.append(comp_glb)
+                mesh_cands.extend([
+                    p3sam_out_dir / "p3sam_cleaned_mesh.glb",
+                    p3sam_out_dir / "auto_mask_mesh_final_post.glb",
+                    p3sam_out_dir / "auto_mask_mesh_final.glb",
+                    p3sam_out_dir / "auto_mask_mesh_org.glb",
+                    p3sam_out_dir / "auto_mask_mesh.glb",
+                    mesh_p
+                ])
+                
+                target_mesh = None
+                for cand in mesh_cands:
+                    if cand and cand.exists():
+                        try:
+                            m = trimesh.load(str(cand), force="mesh")
+                            if hasattr(m, "faces") and len(m.faces) == len(face_ids):
+                                target_mesh = m
+                                logger.info(f"Matched segmentation mesh: {cand.name} with {len(m.faces)} faces")
+                                break
+                        except Exception:
+                            continue
+                            
+                if target_mesh is None:
+                    target_mesh = trimesh.load(str(mesh_p), force="mesh")
+                
+                # Resilient alignment: ensure face_ids dimension strictly matches target_mesh.faces
+                num_faces = len(target_mesh.faces)
+                if len(face_ids) != num_faces:
+                    logger.warning(f"Aligning face_ids length ({len(face_ids)}) to target mesh faces ({num_faces})")
+                    if len(face_ids) < num_faces:
+                        padded = np.full(num_faces, -1, dtype=face_ids.dtype)
+                        padded[:len(face_ids)] = face_ids
+                        face_ids = padded
+                    else:
+                        face_ids = face_ids[:num_faces]
+                        
+                unique_ids = [uid for uid in np.unique(face_ids) if uid >= 0]
+                raw_parts = []
+                for uid in unique_ids:
+                    mask = (face_ids == uid)
+                    if not np.any(mask):
+                        continue
+                    face_idx = np.nonzero(mask)[0]
+                    sub = target_mesh.submesh([face_idx], append=True)
+                    if sub is not None and hasattr(sub, "faces") and len(sub.faces) > 0:
+                        raw_parts.append(sub)
+                        
+                if not raw_parts:
+                    raw_parts = [target_mesh]
+                    
                 assembly_scene = create_tripo_assembly_scene(raw_parts, auto_clean=True, auto_seal=True)
             else:
                 jobs[job_id]["stage"] = "Step 2/3: Running X-Part DiT diffusion & DiffDMC CUDA GPU marching cubes..."
@@ -225,7 +276,14 @@ def run_pipeline_sync(job_id, mesh_path, params):
                 if candidates:
                     generated_glb = candidates[0]
                     loaded_gen = trimesh.load(str(generated_glb))
-                    part_meshes = [g for g in loaded_gen.geometry.values() if hasattr(g, "vertices") and len(g.vertices) > 0]
+                    if isinstance(loaded_gen, trimesh.Scene):
+                        part_meshes = [g for g in loaded_gen.geometry.values() if hasattr(g, "faces") and len(g.faces) > 0]
+                    elif isinstance(loaded_gen, trimesh.Trimesh):
+                        part_meshes = [loaded_gen] if hasattr(loaded_gen, "faces") and len(loaded_gen.faces) > 0 else []
+                    else:
+                        part_meshes = []
+                    if not part_meshes:
+                        part_meshes = [trimesh.load(str(mesh_p), force="mesh")]
                     assembly_scene = create_tripo_assembly_scene(part_meshes, auto_clean=True, auto_seal=True)
                 else:
                     raise RuntimeError(f"XPart failed to generate output. Stderr: {res_xpart.stderr}")
@@ -366,6 +424,7 @@ async def start_segmentation(request):
     }
 
     params = {
+        "mode": data.get("mode", "tripo_exact"),
         "steps": int(data.get("steps", 50)),
         "resolution": int(data.get("resolution", 512)),
         "mc_algo": data.get("mc_algo", "dmc"),

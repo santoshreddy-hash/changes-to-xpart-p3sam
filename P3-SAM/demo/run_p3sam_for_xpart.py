@@ -35,8 +35,10 @@ with torch.autocast("cuda", dtype=torch.bfloat16):
 torch.cuda.synchronize()
 elapsed = time.perf_counter() - t0
 valid_parts = len(np.unique(face_ids[face_ids >= 0])) if np.any(face_ids >= 0) else len(np.unique(face_ids))
-print(f"TOTAL TIME: {elapsed:.2f}s, parts: {valid_parts}, aabb shape: {aabb.shape}")
-
 np.save(out_aabb, aabb)
 print(f"Saved aabb to {out_aabb}")
+mesh_out_glb = os.path.join(out_dir, "p3sam_cleaned_mesh.glb")
+mesh_out.export(mesh_out_glb)
+print(f"Saved cleaned mesh to {mesh_out_glb}")
 print(f"Results saved in {out_dir}")
+

@@ -401,7 +401,7 @@ def clean_and_merge_parts(parts, iou_thresh=0.55, containment_thresh=0.75):
     Merges duplicate or heavily overlapping parts, and small fragment slivers.
     Eliminates over-segmentation and prevents duplicate whole-body parts.
     """
-    valid = [p for p in parts if p is not None and hasattr(p, "vertices") and len(p.vertices) > 0]
+    valid = [p for p in parts if p is not None and hasattr(p, "vertices") and len(p.vertices) > 0 and hasattr(p, "faces") and len(p.faces) > 0]
     if len(valid) <= 1:
         return valid
 
@@ -456,7 +456,7 @@ def create_tripo_assembly_scene(part_meshes, names=None, colors=None, auto_clean
     boundary loop capping (seal_and_cap_mesh) to prevent holes and color overlap.
     """
     assembly = trimesh.Scene()
-    valid_parts = [p for p in part_meshes if p is not None and hasattr(p, "vertices") and len(p.vertices) > 0]
+    valid_parts = [p for p in part_meshes if p is not None and hasattr(p, "vertices") and len(p.vertices) > 0 and hasattr(p, "faces") and len(p.faces) > 0]
     
     if auto_clean and len(valid_parts) > 1:
         valid_parts = clean_and_merge_parts(valid_parts)
@@ -539,22 +539,7 @@ def export_tripo_assembly_glb(scene_or_parts, filepath, names=None, colors=None)
     filepath.parent.mkdir(parents=True, exist_ok=True)
     
     if isinstance(scene_or_parts, trimesh.Scene):
-        if len(scene_or_parts.geometry) > 1:
-            part_meshes = []
-            part_names = []
-            for name, geom in scene_or_parts.geometry.items():
-                if hasattr(geom, "vertices") and len(geom.vertices) > 0:
-                    try:
-                        xform = scene_or_parts.graph[name][0]
-                        wg = geom.copy()
-                        wg.apply_transform(xform)
-                    except Exception:
-                        wg = geom.copy()
-                    part_meshes.append(wg)
-                    part_names.append(name)
-            assembly_scene = create_tripo_assembly_scene(part_meshes, names=names or part_names, colors=colors)
-        else:
-            assembly_scene = scene_or_parts
+        assembly_scene = scene_or_parts
     elif isinstance(scene_or_parts, (list, tuple)):
         assembly_scene = create_tripo_assembly_scene(scene_or_parts, names=names, colors=colors)
     else:
