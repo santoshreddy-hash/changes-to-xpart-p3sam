@@ -396,10 +396,10 @@ def seal_and_cap_mesh(sub: trimesh.Trimesh) -> trimesh.Trimesh:
         return m
 
 
-def clean_and_merge_parts(parts, iou_thresh=0.55, containment_thresh=0.75):
+def clean_and_merge_parts(parts, iou_thresh=0.80, containment_thresh=0.85):
     """
-    Merges duplicate or heavily overlapping parts, and small fragment slivers.
-    Eliminates over-segmentation and prevents duplicate whole-body parts.
+    Merges duplicate or heavily co-extensive parts (e.g. duplicate whole-body boxes).
+    Prevents over-merging distinct adjacent components like shelves and posts.
     """
     valid = [p for p in parts if p is not None and hasattr(p, "vertices") and len(p.vertices) > 0 and hasattr(p, "faces") and len(p.faces) > 0]
     if len(valid) <= 1:
@@ -433,9 +433,9 @@ def clean_and_merge_parts(parts, iou_thresh=0.55, containment_thresh=0.75):
                 contain_i = inter_vol / vol_i
                 contain_j = inter_vol / vol_j
 
-                # Check if parts are duplicate or heavily co-extensive
-                if iou > iou_thresh or (contain_i > containment_thresh and contain_j > 0.4) or (contain_j > containment_thresh and contain_i > 0.4):
-                    logger.info(f"[MERGE] Merging part {i} (vol={vol_i:.4f}) and part {j} (vol={vol_j:.4f}) with IoU={iou:.3f}")
+                # Only merge true duplicate parts that heavily overlap in both directions
+                if iou > iou_thresh or (contain_i > containment_thresh and contain_j > containment_thresh):
+                    logger.info(f"[MERGE] Merging duplicate part {i} (vol={vol_i:.4f}) and part {j} (vol={vol_j:.4f}) with IoU={iou:.3f}")
                     combined = trimesh.util.concatenate([merged[i], merged[j]])
                     combined.update_faces(combined.unique_faces())
                     combined.remove_unreferenced_vertices()

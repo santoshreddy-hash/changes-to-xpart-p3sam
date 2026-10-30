@@ -261,6 +261,7 @@ def run_pipeline_sync(job_id, mesh_path, params):
                 xpart_script = ROOT_DIR / "XPart" / "demo.py"
                 cmd_xpart = [
                     PYTHON_EXE, str(xpart_script),
+                    "--config", str(ROOT_DIR / "XPart" / "partgen" / "config" / "infer.yaml"),
                     "--mesh_path", str(mesh_p),
                     "--save_dir", str(out_job_dir),
                     "--mc_algo", params.get("mc_algo", "dmc"),
@@ -270,9 +271,10 @@ def run_pipeline_sync(job_id, mesh_path, params):
                 if aabb_npy and aabb_npy.exists():
                     cmd_xpart.extend(["--aabb_path", str(aabb_npy)])
                     
+                env["XPART_DIFFUSION_PART_CHUNK"] = "16"
                 res_xpart = subprocess.run(cmd_xpart, cwd=str(ROOT_DIR), env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
                 
-                candidates = list(out_job_dir.glob("train_cfg_*_dit_boxgpt_*.glb"))
+                candidates = list(out_job_dir.rglob("train_cfg_*_dit_boxgpt_*.glb"))
                 if candidates:
                     generated_glb = candidates[0]
                     loaded_gen = trimesh.load(str(generated_glb))
@@ -424,7 +426,7 @@ async def start_segmentation(request):
     }
 
     params = {
-        "mode": data.get("mode", "tripo_exact"),
+        "mode": data.get("mode", "xpart_dit"),
         "steps": int(data.get("steps", 50)),
         "resolution": int(data.get("resolution", 512)),
         "mc_algo": data.get("mc_algo", "dmc"),

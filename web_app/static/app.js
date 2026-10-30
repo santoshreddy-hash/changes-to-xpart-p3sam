@@ -134,6 +134,7 @@ function updateMeshStatsDisplay(stats) {
 
 // --- EXPLOSION & PART REGISTRATION ---
 function initExplosionData(model) {
+  model.updateMatrixWorld(true);
   const bBoxUnion = new THREE.Box3();
   const meshes = [];
   originalMaterials.clear();
@@ -227,7 +228,13 @@ function initExplosionData(model) {
     if (mesh.geometry.boundingBox) mesh.geometry.boundingBox.getSize(pSize);
 
     let hexColor = '#6366f1';
-    if (mesh.material && mesh.material.color) {
+    if (mesh.geometry && mesh.geometry.attributes && mesh.geometry.attributes.color) {
+      const cAttr = mesh.geometry.attributes.color;
+      const r = Math.round(cAttr.getX(0) * (cAttr.getX(0) <= 1.0 ? 255 : 1));
+      const g = Math.round(cAttr.getY(0) * (cAttr.getY(0) <= 1.0 ? 255 : 1));
+      const b = Math.round(cAttr.getZ(0) * (cAttr.getZ(0) <= 1.0 ? 255 : 1));
+      hexColor = '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+    } else if (mesh.material && mesh.material.color && mesh.material.color.getHex() !== 0xffffff) {
       hexColor = '#' + mesh.material.color.getHexString();
     }
 
