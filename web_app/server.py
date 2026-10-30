@@ -5,6 +5,8 @@ import time
 import uuid
 import asyncio
 import subprocess
+import numpy as np
+import trimesh
 from pathlib import Path
 from aiohttp import web
 
