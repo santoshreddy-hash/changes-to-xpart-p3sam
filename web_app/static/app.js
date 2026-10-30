@@ -2503,219 +2503,209 @@ function dividePartIntoIndependentPieces(targetMesh) {
   }
 }
 
+// Cluster connected components that belong to the same brushed area
+function clusterConnectedComponents(geo, components, maxClusterDist = 0.08) {
+  if (!components || components.length <= 1) return components;
+
+  const isIndexed = geo.index !== null;
+  const index = geo.index;
+  const pos = geo.attributes.position;
+
+  // Compute 3D centroid for each component
+  const compCenters = components.map(faceList => {
+    let cx = 0, cy = 0, cz = 0, count = 0;
+    for (const f of faceList) {
+      const i0 = isIndexed ? index.getX(f * 3) : f * 3;
+      const i1 = isIndexed ? index.getX(f * 3 + 1) : f * 3 + 1;
+      const i2 = isIndexed ? index.getX(f * 3 + 2) : f * 3 + 2;
+      for (const vi of [i0, i1, i2]) {
+        cx += pos.getX(vi);
+        cy += pos.getY(vi);
+        cz += pos.getZ(vi);
+        count++;
+      }
+    }
+    return count > 0 ? new THREE.Vector3(cx / count, cy / count, cz / count) : new THREE.Vector3();
+  });
+
+  // Union components within maxClusterDist
+  const parent = components.map((_, i) => i);
+  function find(i) {
+    if (parent[i] === i) return i;
+    parent[i] = find(parent[i]);
+    return parent[i];
+  }
+  function union(i, j) {
+    const rootI = find(i);
+    const rootJ = find(j);
+    if (rootI !== rootJ) parent[rootI] = rootJ;
+  }
+
+  for (let i = 0; i < components.length; i++) {
+    for (let j = i + 1; j < components.length; j++) {
+      if (compCenters[i].distanceTo(compCenters[j]) <= maxClusterDist) {
+        union(i, j);
+      }
+    }
+  }
+
+  const grouped = new Map();
+  for (let i = 0; i < components.length; i++) {
+    const root = find(i);
+    if (!grouped.has(root)) grouped.set(root, []);
+    grouped.get(root).push(...components[i]);
+  }
+
+  return Array.from(grouped.values());
+}
+
 function cutOrDivideBrushedParts() {
   resetExplosionToRest();
 
   const activeMeshes = Array.from(selectedMeshFaces.keys()).filter(m => selectedMeshFaces.get(m).size > 0);
   const checkedList = Array.from(checkedParts);
 
-  if (activeMeshes.length === 0 && checkedList.length === 0) {
-    if (selectedPartMesh) {
-      checkedList.push(selectedPartMesh);
-    } else {
-      showToast('⚠️ Please brush areas on the model or select parts to separate them!', 'warning');
-      return;
+  // Require explicit brush selection or checked multi-shell parts
+  if (activeMeshes.length === 0) {
+    if (checkedList.length > 0) {
+      let dividedAny = false;
+      checkedList.forEach(targetMesh => {
+        if (!targetMesh || !targetMesh.geometry || !partsData.has(targetMesh)) return;
+        const comps = getConnectedComponents(targetMesh.geometry);
+        if (comps.length >= 2) {
+          dividePartIntoConnectedComponents(targetMesh, false);
+          dividedAny = true;
+        }
+      });
+      if (dividedAny) {
+        checkedParts.clear();
+        updateBulkActionBar();
+        rebuildPartsHierarchyUI();
+        return;
+      }
     }
+    showToast('⚠️ Please use the 3D Brush to paint the area or region you want to separate!', 'warning');
+    return;
   }
 
-  saveStateToUndoStack('Separate / Split part(s)');
+  saveStateToUndoStack('Separate / Split selected region(s)');
 
   let createdCount = 0;
   const newlyCreatedMeshes = [];
 
-  // 1. Separate brushed faces from each mesh
-  if (activeMeshes.length > 0) {
-    activeMeshes.forEach(parentMesh => {
-      const faceSet = selectedMeshFaces.get(parentMesh);
-      if (!faceSet || faceSet.size === 0) return;
+  // 1. Separate ONLY the brushed faces from each touched mesh
+  activeMeshes.forEach(parentMesh => {
+    const faceSet = selectedMeshFaces.get(parentMesh);
+    if (!faceSet || faceSet.size === 0) return;
 
-      const srcGeo = parentMesh.geometry;
-      const isIndexed = srcGeo.index !== null;
-      const totalFaces = isIndexed ? (srcGeo.index.count / 3) : (srcGeo.attributes.position.count / 3);
-      const parentInfo = partsData.get(parentMesh);
-      const parentName = parentInfo ? parentInfo.name : 'part';
-      const parentObj = parentMesh.parent || currentLoadedMesh || scene;
+    const srcGeo = parentMesh.geometry;
+    const isIndexed = srcGeo.index !== null;
+    const totalFaces = isIndexed ? (srcGeo.index.count / 3) : (srcGeo.attributes.position.count / 3);
+    const parentInfo = partsData.get(parentMesh);
+    const parentName = parentInfo ? parentInfo.name : 'part';
+    const parentObj = parentMesh.parent || currentLoadedMesh || scene;
 
-      const { selectedGeo, remainingGeo } = partitionGeometry(srcGeo, faceSet);
+    const { selectedGeo, remainingGeo } = partitionGeometry(srcGeo, faceSet);
 
-      // Check if selected faces form multiple disconnected components (e.g. 2 separate legs or disjoint areas)
-      let selectedComponents = getConnectedComponents(selectedGeo);
-      if (!selectedComponents || selectedComponents.length === 0) {
-        selectedComponents = [Array.from({ length: faceSet.size }, (_, i) => i)];
-      }
+    // Identify distinct disjoint regions in selection (e.g. 2 knobs on the same drawer)
+    const rawComponents = getConnectedComponents(selectedGeo);
+    const clusterDist = Math.max(brushRadius * 1.25, 0.08);
+    let selectedComponents = clusterConnectedComponents(selectedGeo, rawComponents, clusterDist);
+    if (!selectedComponents || selectedComponents.length === 0) {
+      selectedComponents = [Array.from({ length: faceSet.size }, (_, i) => i)];
+    }
 
-      // For EACH connected component in the selected region:
-      // Separate it as an independent part with its own DISTINCT VIBRANT COLOR!
-      selectedComponents.forEach((compFaces, cIdx) => {
-        let pieceGeo = selectedComponents.length === 1
-          ? selectedGeo
-          : extractSubGeometry(selectedGeo, compFaces);
+    // Separate EACH distinct brushed region as an independent part with its own VIBRANT COLOR
+    selectedComponents.forEach((compFaces, cIdx) => {
+      let pieceGeo = selectedComponents.length === 1
+        ? selectedGeo
+        : extractSubGeometry(selectedGeo, compFaces);
 
-        const newColor = getNextDistinctPaletteColor();
-        const newMat = new THREE.MeshStandardMaterial({
-          color: newColor,
-          roughness: 0.35,
-          metalness: 0.05,
-          emissive: newColor,
-          emissiveIntensity: 0.15,
-          side: THREE.DoubleSide
-        });
-
-        const nextIdx = partsData.size;
-        const compSuffix = selectedComponents.length > 1 ? `_piece_${cIdx + 1}` : `_sep_${nextIdx + 1}`;
-        const newName = `${parentName}${compSuffix}`;
-        const newMesh = new THREE.Mesh(pieceGeo, newMat);
-        newMesh.name = newName;
-
-        newMesh.position.copy(parentMesh.position);
-        newMesh.quaternion.copy(parentMesh.quaternion);
-        newMesh.scale.copy(parentMesh.scale);
-
-        parentObj.add(newMesh);
-
-        newMesh.updateMatrixWorld(true);
-        const nBox = new THREE.Box3().setFromObject(newMesh);
-        const nCenter = new THREE.Vector3();
-        nBox.getCenter(nCenter);
-        const nDir = nCenter.clone().sub(globalCenter);
-        if (nDir.length() < 1e-4) nDir.set(0, 1, 0);
-        nDir.normalize();
-
-        const newInfo = {
-          mesh: newMesh,
-          index: nextIdx,
-          name: newName,
-          originalLocalPosition: newMesh.position.clone(),
-          originalRotation: newMesh.quaternion.clone(),
-          originalScale: newMesh.scale.clone(),
-          explodeDirection: nDir,
-          distanceWeight: 1.0,
-          geometryCenterOffset: nCenter.clone(),
-          accumulatedRotation: 0,
-          rotationAxis: new THREE.Vector3(1, 0, 0),
-          rotationSpeedFactor: 1.0,
-          snapshotRotation: 0,
-          customOffset: new THREE.Vector3(),
-          customRotation: new THREE.Euler(),
-          customScale: 1.0,
-          visible: true
-        };
-
-        partsData.set(newMesh, newInfo);
-        paletteMaterials.set(newMesh, newMat);
-        originalMaterials.set(newMesh, cloneMaterialSafe(newMat));
-        newlyCreatedMeshes.push(newMesh);
-        createdCount++;
+      const newColor = getNextDistinctPaletteColor();
+      const newMat = new THREE.MeshStandardMaterial({
+        color: newColor,
+        roughness: 0.35,
+        metalness: 0.05,
+        emissive: newColor,
+        emissiveIntensity: 0.15,
+        side: THREE.DoubleSide
       });
 
-      // Handle the parent mesh
-      if (faceSet.size >= totalFaces) {
-        // All faces were separated out, remove parent mesh
-        parentObj.remove(parentMesh);
-        partsData.delete(parentMesh);
-        paletteMaterials.delete(parentMesh);
-        originalMaterials.delete(parentMesh);
-        srcGeo.dispose();
-      } else {
-        // Check if removing brushed faces severed parent mesh into disconnected components:
-        const remComponents = getConnectedComponents(remainingGeo);
-        if (remComponents && remComponents.length >= 2) {
-          parentObj.remove(parentMesh);
-          partsData.delete(parentMesh);
-          paletteMaterials.delete(parentMesh);
-          originalMaterials.delete(parentMesh);
+      const nextIdx = partsData.size;
+      const compSuffix = selectedComponents.length > 1 ? `_piece_${cIdx + 1}` : `_sep_${nextIdx + 1}`;
+      const newName = `${parentName}${compSuffix}`;
+      const newMesh = new THREE.Mesh(pieceGeo, newMat);
+      newMesh.name = newName;
 
-          remComponents.forEach((rFaces, rIdx) => {
-            const rGeo = extractSubGeometry(remainingGeo, rFaces);
-            const rColor = (rIdx === 0 && parentMesh.material && parentMesh.material.color)
-              ? '#' + (Array.isArray(parentMesh.material) ? parentMesh.material[0].color : parentMesh.material.color).getHexString()
-              : getNextDistinctPaletteColor();
+      newMesh.position.copy(parentMesh.position);
+      newMesh.quaternion.copy(parentMesh.quaternion);
+      newMesh.scale.copy(parentMesh.scale);
 
-            const rMat = new THREE.MeshStandardMaterial({
-              color: rColor,
-              roughness: 0.35,
-              metalness: 0.05,
-              emissive: rColor,
-              emissiveIntensity: 0.15,
-              side: THREE.DoubleSide
-            });
+      parentObj.add(newMesh);
 
-            const nextIdx = partsData.size;
-            const rName = `${parentName}_rem_${rIdx + 1}`;
-            const rMesh = new THREE.Mesh(rGeo, rMat);
-            rMesh.name = rName;
-            rMesh.position.copy(parentMesh.position);
-            rMesh.quaternion.copy(parentMesh.quaternion);
-            rMesh.scale.copy(parentMesh.scale);
-            parentObj.add(rMesh);
-            rMesh.updateMatrixWorld(true);
+      newMesh.updateMatrixWorld(true);
+      const nBox = new THREE.Box3().setFromObject(newMesh);
+      const nCenter = new THREE.Vector3();
+      nBox.getCenter(nCenter);
+      const nDir = nCenter.clone().sub(globalCenter);
+      if (nDir.length() < 1e-4) nDir.set(0, 1, 0);
+      nDir.normalize();
 
-            const rBox = new THREE.Box3().setFromObject(rMesh);
-            const rCenter = new THREE.Vector3();
-            rBox.getCenter(rCenter);
-            const rDir = rCenter.clone().sub(globalCenter);
-            if (rDir.length() < 1e-4) rDir.set(0, 1, 0);
-            rDir.normalize();
+      const newInfo = {
+        mesh: newMesh,
+        index: nextIdx,
+        name: newName,
+        originalLocalPosition: newMesh.position.clone(),
+        originalRotation: newMesh.quaternion.clone(),
+        originalScale: newMesh.scale.clone(),
+        explodeDirection: nDir,
+        distanceWeight: 1.0,
+        geometryCenterOffset: nCenter.clone(),
+        accumulatedRotation: 0,
+        rotationAxis: new THREE.Vector3(1, 0, 0),
+        rotationSpeedFactor: 1.0,
+        snapshotRotation: 0,
+        customOffset: new THREE.Vector3(),
+        customRotation: new THREE.Euler(),
+        customScale: 1.0,
+        visible: true
+      };
 
-            const rInfo = {
-              mesh: rMesh,
-              index: nextIdx,
-              name: rName,
-              originalLocalPosition: rMesh.position.clone(),
-              originalRotation: rMesh.quaternion.clone(),
-              originalScale: rMesh.scale.clone(),
-              explodeDirection: rDir,
-              distanceWeight: 1.0,
-              geometryCenterOffset: rCenter.clone(),
-              accumulatedRotation: 0,
-              rotationAxis: new THREE.Vector3(1, 0, 0),
-              rotationSpeedFactor: 1.0,
-              snapshotRotation: 0,
-              customOffset: new THREE.Vector3(),
-              customRotation: new THREE.Euler(),
-              customScale: 1.0,
-              visible: true
-            };
+      partsData.set(newMesh, newInfo);
+      paletteMaterials.set(newMesh, newMat);
+      originalMaterials.set(newMesh, cloneMaterialSafe(newMat));
+      newlyCreatedMeshes.push(newMesh);
+      createdCount++;
+    });
 
-            partsData.set(rMesh, rInfo);
-            paletteMaterials.set(rMesh, rMat);
-            originalMaterials.set(rMesh, cloneMaterialSafe(rMat));
-            newlyCreatedMeshes.push(rMesh);
-            createdCount++;
-          });
+    // Handle parent mesh: PRESERVE intact with original color and identity!
+    if (faceSet.size >= totalFaces) {
+      // If 100% of faces were brushed, remove parent mesh
+      parentObj.remove(parentMesh);
+      partsData.delete(parentMesh);
+      paletteMaterials.delete(parentMesh);
+      originalMaterials.delete(parentMesh);
+      srcGeo.dispose();
+    } else {
+      // ONLY the brushed region was carved out.
+      // The parent mesh retains all remaining geometry with its original color and material!
+      parentMesh.geometry.dispose();
+      parentMesh.geometry = remainingGeo;
+      parentMesh.geometry.computeBoundingBox();
+      parentMesh.geometry.computeBoundingSphere();
+      parentMesh.updateMatrixWorld(true);
 
-          srcGeo.dispose();
-          remainingGeo.dispose();
-        } else {
-          // Parent mesh keeps remaining faces and PRESERVES its original color!
-          parentMesh.geometry.dispose();
-          parentMesh.geometry = remainingGeo;
-          parentMesh.geometry.computeBoundingBox();
-          parentMesh.geometry.computeBoundingSphere();
-          parentMesh.updateMatrixWorld(true);
-
-          if (parentInfo) {
-            const pBox = new THREE.Box3().setFromObject(parentMesh);
-            const pCenter = new THREE.Vector3();
-            pBox.getCenter(pCenter);
-            parentInfo.geometryCenterOffset.copy(pCenter);
-            const pDir = pCenter.clone().sub(globalCenter);
-            if (pDir.length() < 1e-4) pDir.set(0, 1, 0);
-            parentInfo.explodeDirection.copy(pDir.normalize());
-          }
-        }
+      if (parentInfo) {
+        const pBox = new THREE.Box3().setFromObject(parentMesh);
+        const pCenter = new THREE.Vector3();
+        pBox.getCenter(pCenter);
+        parentInfo.geometryCenterOffset.copy(pCenter);
+        const pDir = pCenter.clone().sub(globalCenter);
+        if (pDir.length() < 1e-4) pDir.set(0, 1, 0);
+        parentInfo.explodeDirection.copy(pDir.normalize());
       }
-    });
-  }
-
-  // 2. If no faces brushed but parts were checked in hierarchy list:
-  if (activeMeshes.length === 0 && checkedList.length > 0) {
-    checkedList.forEach(targetMesh => {
-      if (!targetMesh || !targetMesh.geometry || !partsData.has(targetMesh)) return;
-      const didDivide = dividePartIntoIndependentPieces(targetMesh);
-      if (didDivide) createdCount++;
-    });
-  }
+    }
+  });
 
   clearBrushSelection();
   checkedParts.clear();
@@ -2729,8 +2719,8 @@ function cutOrDivideBrushedParts() {
     updateMeshStatsDisplay(calculateGeometryStats(currentLoadedMesh));
   }
 
-  stageOperation(`Separated into ${createdCount} new part(s)`);
-  showToast(`✂️ Successfully separated selected parts into <strong>${createdCount} independent parts</strong>, each with a <strong>different vibrant color</strong>!`, 'success');
+  stageOperation(`Separated ${createdCount} region(s) into distinct part(s)`);
+  showToast(`✂️ Separated selected region into <strong>${createdCount} independent part(s)</strong> with <strong>new vibrant color(s)</strong>!`, 'success');
 }
 
 if (brushCutBtn) brushCutBtn.onclick = () => cutOrDivideBrushedParts();
