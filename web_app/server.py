@@ -321,7 +321,14 @@ def run_pipeline_sync(job_id, mesh_path, params):
                     preserve_materials=should_preserve
                 )
             else:
-                jobs[job_id]["stage"] = "Step 2/3: Running X-Part DiT diffusion & DiffDMC CUDA GPU marching cubes..."
+                m_desc = "X-Part DiT diffusion & DiffDMC CUDA GPU marching cubes"
+                if mode == "xpart_fast":
+                    m_desc = f"X-Part Fast DiT ({params.get('steps', 20)} steps, {params.get('resolution', 384)} res, GPU DiffDMC)"
+                elif mode == "xpart_lossless":
+                    m_desc = f"X-Part Lossless GPU ({params.get('steps', 50)} steps, {params.get('resolution', 512)} res, GPU DiffDMC)"
+                elif mode == "xpart_baseline":
+                    m_desc = f"Original X-Part Baseline ({params.get('steps', 50)} steps, {params.get('resolution', 512)} res, CPU MC)"
+                jobs[job_id]["stage"] = f"Step 2/3: Running {m_desc}..."
                 jobs[job_id]["progress"] = 55
                 
                 xpart_script = ROOT_DIR / "XPart" / "demo.py"
@@ -330,14 +337,14 @@ def run_pipeline_sync(job_id, mesh_path, params):
                     "--config", str(ROOT_DIR / "XPart" / "partgen" / "config" / "infer.yaml"),
                     "--mesh_path", str(mesh_p),
                     "--save_dir", str(out_job_dir),
-                    "--mc_algo", params.get("mc_algo", "dmc"),
+                    "--mc_algo", str(params.get("mc_algo", "dmc")),
                     "--num_inference_steps", str(params.get("steps", 50)),
                     "--octree_resolution", str(params.get("resolution", 512))
                 ]
                 if aabb_npy and aabb_npy.exists():
                     cmd_xpart.extend(["--aabb_path", str(aabb_npy)])
                     
-                env["XPART_DIFFUSION_PART_CHUNK"] = "16"
+                env["XPART_DIFFUSION_PART_CHUNK"] = str(params.get("chunk_size", 16))
                 res_xpart = subprocess.run(cmd_xpart, cwd=str(ROOT_DIR), env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
                 
                 candidates = list(out_job_dir.rglob("train_cfg_*_dit_boxgpt_*.glb"))
@@ -501,13 +508,41 @@ async def start_segmentation(request):
         "created_at": time.time()
     }
 
+    mode = data.get("mode", "tripo_exact")
+    if mode == "xpart_fast":
+        default_steps = 20
+        default_res = 384
+        default_mc = "dmc"
+        default_chunk = 16
+        default_preserve = False
+    elif mode == "xpart_lossless":
+        default_steps = 50
+        default_res = 512
+        default_mc = "dmc"
+        default_chunk = 16
+        default_preserve = False
+    elif mode == "xpart_baseline":
+        default_steps = 50
+        default_res = 512
+        default_mc = "mc"
+        default_chunk = 4
+        default_preserve = False
+    else:
+        mode = "tripo_exact"
+        default_steps = 50
+        default_res = 512
+        default_mc = "dmc"
+        default_chunk = 16
+        default_preserve = True
+
     params = {
-        "mode": data.get("mode", "tripo_exact"),
-        "steps": int(data.get("steps", 50)),
-        "resolution": int(data.get("resolution", 512)),
-        "mc_algo": data.get("mc_algo", "dmc"),
+        "mode": mode,
+        "steps": int(data.get("steps", default_steps)),
+        "resolution": int(data.get("resolution", default_res)),
+        "mc_algo": str(data.get("mc_algo", default_mc)),
+        "chunk_size": int(data.get("chunk_size", default_chunk)),
         "explosion_scale": float(data.get("explosion_scale", 0.35)),
-        "preserve_materials": bool(data.get("preserve_materials", True))
+        "preserve_materials": bool(data.get("preserve_materials", default_preserve))
     }
 
     loop = asyncio.get_event_loop()
@@ -548,7 +583,11 @@ def create_app():
     return app
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8080)), help="Port to listen on (default: 8080 or PORT env var)")
+    args, _ = parser.parse_known_args()
+    port = args.port
     print(f"==================================================")
     print(f"  Tripo3D Matching Web Studio & Segmentation Server")
     print(f"  Running at: http://localhost:{port}")

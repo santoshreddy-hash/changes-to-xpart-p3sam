@@ -3358,18 +3358,102 @@ function stopLiveStopwatch(finalFormatted) {
   }
 }
 
-async function runAutoSegmentationPipeline(meshPath = null, modelTitle = null) {
+// --- PIPELINE SELECTION & CONFIGURATION ENGINE ---
+const PIPELINE_CONFIGS = {
+  tripo_exact: {
+    id: 'tripo_exact',
+    label: 'Tripo Exact Partitioning',
+    timeEst: '~10.8s Total',
+    desc: 'High-speed exact mesh partitioning via P3-SAM face assignment. Preserves 100% of authentic PBR paint, vertex colors, and textures.',
+    params: { mode: 'tripo_exact', steps: 50, resolution: 512, mc_algo: 'dmc', chunk_size: 16, preserve_materials: true },
+    step2Label: 'Tripo3D Exact Partitioning:'
+  },
+  xpart_fast: {
+    id: 'xpart_fast',
+    label: 'X-Part Fast DiT',
+    timeEst: '~35.0s Total',
+    desc: 'Generative DiT flow-matching with 20 sampling steps, 384 octree grid, and CUDA GPU DiffDMC marching cubes.',
+    params: { mode: 'xpart_fast', steps: 20, resolution: 384, mc_algo: 'dmc', chunk_size: 16, preserve_materials: false },
+    step2Label: 'X-Part Fast DiT (20 steps, 384 res):'
+  },
+  xpart_lossless: {
+    id: 'xpart_lossless',
+    label: 'X-Part Lossless GPU',
+    timeEst: '~71.9s Total',
+    desc: 'Full 50-step DiT diffusion, 512 octree resolution, single-pass batch chunking (chunk=16), and GPU DiffDMC (bit-identical to original).',
+    params: { mode: 'xpart_lossless', steps: 50, resolution: 512, mc_algo: 'dmc', chunk_size: 16, preserve_materials: false },
+    step2Label: 'X-Part Lossless DiT (50 steps, 512 res):'
+  },
+  xpart_baseline: {
+    id: 'xpart_baseline',
+    label: 'Original X-Part Baseline',
+    timeEst: '~185.5s Total',
+    desc: 'Original unoptimized generative pipeline with 50 diffusion steps, 512 octree resolution, small chunking (chunk=4), and single-threaded CPU marching cubes.',
+    params: { mode: 'xpart_baseline', steps: 50, resolution: 512, mc_algo: 'mc', chunk_size: 4, preserve_materials: false },
+    step2Label: 'Original X-Part Baseline (CPU MC):'
+  }
+};
+
+let currentSelectedPipelineMode = 'tripo_exact';
+
+function setPipelineMode(mode) {
+  if (!PIPELINE_CONFIGS[mode]) mode = 'tripo_exact';
+  currentSelectedPipelineMode = mode;
+  const cfg = PIPELINE_CONFIGS[mode];
+
+  const topSelect = document.getElementById('topbar-pipeline-select');
+  const sideSelect = document.getElementById('sidebar-pipeline-select');
+  const latencyBadge = document.getElementById('pipeline-latency-badge');
+  const descText = document.getElementById('pipeline-desc-text');
+  const step2Label = document.getElementById('step2-title-label');
+
+  if (topSelect && topSelect.value !== mode) topSelect.value = mode;
+  if (sideSelect && sideSelect.value !== mode) sideSelect.value = mode;
+  if (latencyBadge) latencyBadge.innerText = cfg.timeEst;
+  if (descText) descText.innerText = cfg.desc;
+  if (step2Label) step2Label.innerText = cfg.step2Label;
+
+  showToast(`⚙️ Active Pipeline set to <strong>${cfg.label}</strong> (${cfg.timeEst})`, 'info');
+}
+
+const topbarPipelineSelect = document.getElementById('topbar-pipeline-select');
+if (topbarPipelineSelect) {
+  topbarPipelineSelect.onchange = (e) => setPipelineMode(e.target.value);
+}
+
+const sidebarPipelineSelect = document.getElementById('sidebar-pipeline-select');
+if (sidebarPipelineSelect) {
+  sidebarPipelineSelect.onchange = (e) => setPipelineMode(e.target.value);
+}
+
+const topbarRunPipelineBtn = document.getElementById('topbar-run-pipeline-btn');
+if (topbarRunPipelineBtn) {
+  topbarRunPipelineBtn.onclick = () => runAutoSegmentationPipeline();
+}
+
+const sidebarRunPipelineBtn = document.getElementById('sidebar-run-pipeline-btn');
+if (sidebarRunPipelineBtn) {
+  sidebarRunPipelineBtn.onclick = () => runAutoSegmentationPipeline();
+}
+
+async function runAutoSegmentationPipeline(meshPath = null, modelTitle = null, overrideMode = null) {
   const targetPath = meshPath || currentModelPath;
   if (!targetPath) {
-    alert('Please upload or select a 3D model first!');
+    showToast('⚠️ Please upload or select a 3D model first!', 'warning');
     return;
   }
+
+  const selectedMode = overrideMode || currentSelectedPipelineMode || 'tripo_exact';
+  const pipelineCfg = PIPELINE_CONFIGS[selectedMode] || PIPELINE_CONFIGS['tripo_exact'];
 
   const banner = document.getElementById('progress-banner');
   const stageText = document.getElementById('progress-stage-text');
   const percentText = document.getElementById('progress-percent-text');
   const barFill = document.getElementById('progress-bar-fill');
   if (banner) banner.style.display = 'flex';
+
+  const step2Label = document.getElementById('step2-title-label');
+  if (step2Label) step2Label.innerText = pipelineCfg.step2Label;
 
   // Reset timing fields
   const tStep1 = document.getElementById('time-step1');
@@ -3383,18 +3467,16 @@ async function runAutoSegmentationPipeline(meshPath = null, modelTitle = null) {
   startLiveStopwatch();
 
   try {
+    const postBody = {
+      mesh_path: targetPath,
+      ...pipelineCfg.params,
+      explosion_scale: 0.35
+    };
+
     const res = await fetch('/api/segment', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mesh_path: targetPath,
-        mode: 'tripo_exact',
-        preserve_materials: true,
-        mc_algo: 'dmc',
-        steps: 50,
-        resolution: 512,
-        explosion_scale: 0.35
-      })
+      body: JSON.stringify(postBody)
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);

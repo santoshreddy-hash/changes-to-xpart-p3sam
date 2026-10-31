@@ -110,6 +110,24 @@
 
       <div class="bar-divider"></div>
 
+      <!-- Active Pipeline Engine Selector -->
+      <div class="tool-btn-group" title="Choose which segmentation pipeline executes on the 3D model">
+        <span style="font-size: 11px; font-weight: 700; color: #a1a1aa; padding-left: 6px; display: flex; align-items: center; gap: 4px;">
+          <span>⚙️ Pipeline:</span>
+        </span>
+        <select id="topbar-pipeline-select" class="tool-select pipeline-select-styled" title="Select segmentation pipeline: Tripo Exact, X-Part Fast, X-Part Lossless, or Original X-Part Baseline">
+          <option value="tripo_exact" selected>⚡ Tripo Exact Partitioning (~10s)</option>
+          <option value="xpart_fast">🚀 X-Part Fast DiT (~35s)</option>
+          <option value="xpart_lossless">💎 X-Part Lossless GPU (~72s)</option>
+          <option value="xpart_baseline">🐢 Original X-Part Baseline (~185s)</option>
+        </select>
+        <button id="topbar-run-pipeline-btn" class="action-btn primary mini-btn" title="Run selected pipeline on the loaded model">
+          <span>▶ Run</span>
+        </button>
+      </div>
+
+      <div class="bar-divider"></div>
+
       <!-- 3D Brush Tool, Studio Lighting & Settings -->
       <div class="tool-btn-group">
         <button id="tool-brush-btn" class="tool-btn" title="Interactive 3D Brush Segmentation Tool (B)">
@@ -177,6 +195,29 @@
 
   <!-- Left Drawer: Upload, Mesh Statistics HUD & Pipeline Controls -->
   <aside class="pipeline-drawer glass">
+    <!-- Pipeline Engine Selection Card -->
+    <div class="pipeline-engine-card glass">
+      <div class="section-title">
+        <span>Segmentation Engine</span>
+        <span id="pipeline-latency-badge" class="badge-tag live-tag">~10.8s Total</span>
+      </div>
+      <div style="margin-top: 8px;">
+        <select id="sidebar-pipeline-select" class="sidebar-pipeline-dropdown" title="Choose which segmentation pipeline will run on input">
+          <option value="tripo_exact" selected>⚡ Tripo Exact Partitioning (~10s, Original Textures)</option>
+          <option value="xpart_fast">🚀 X-Part Fast Mode (~35s, 20 steps, 384 res)</option>
+          <option value="xpart_lossless">💎 X-Part Lossless GPU (~72s, 50 steps, 512 res)</option>
+          <option value="xpart_baseline">🐢 Original X-Part Baseline (~185s, CPU MC)</option>
+        </select>
+      </div>
+      <div id="pipeline-desc-text" class="pipeline-desc-box">
+        High-speed exact mesh partitioning via P3-SAM face assignment. Preserves 100% of authentic PBR paint, vertex colors, and textures.
+      </div>
+      <button id="sidebar-run-pipeline-btn" class="action-btn primary full-width-btn" style="margin-top: 8px;" title="Execute the selected pipeline on the 3D model">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        <span>▶ Run Selected Pipeline</span>
+      </button>
+    </div>
+
     <!-- Upload Dropzone -->
     <div>
       <div class="section-title">
@@ -242,7 +283,7 @@
         </div>
         <div class="timing-step-item">
           <span class="step-bullet">2</span>
-          <span class="step-name">Tripo3D Exact Partitioning:</span>
+          <span id="step2-title-label" class="step-name">Tripo3D Exact Partitioning:</span>
           <span id="time-step2" class="step-time">-- s</span>
         </div>
         <div class="timing-step-item">
