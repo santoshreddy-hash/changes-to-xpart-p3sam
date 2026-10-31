@@ -3530,6 +3530,11 @@ async function runAutoSegmentationPipeline(meshPath = null, modelTitle = null, o
           if (dlExplodedBtn) {
             dlExplodedBtn.onclick = () => { window.location.href = sData.result.exploded_glb; };
           }
+        } else if (sData.status === 'cancelled') {
+          clearInterval(pollInterval);
+          if (banner) banner.style.display = 'none';
+          stopLiveStopwatch();
+          showToast('⏸️ Preempted: Previous task paused to free GPU for new pipeline run', 'info');
         } else if (sData.status === 'failed') {
           clearInterval(pollInterval);
           if (banner) banner.style.display = 'none';
