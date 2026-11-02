@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>P3-SAM Pipeline Progression - Interactive 3D Showcase</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Outfit', sans-serif;
+      background: #0d0f12;
+      color: #e2e8f0;
+      overflow: hidden;
+      height: 100vh;
+      display: flex;
+    }
+    #sidebar {
+      width: 420px;
+      height: 100vh;
+      background: rgba(18, 21, 26, 0.95);
+      border-right: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      flex-direction: column;
+      z-index: 10;
+      backdrop-filter: blur(12px);
+    }
+    .sidebar-header {
+      padding: 24px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(99, 102, 241, 0.2);
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      color: #a5b4fc;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+    h1 {
+      font-size: 20px;
+      font-weight: 700;
+      color: #fff;
+      line-height: 1.3;
+    }
+    .subtitle {
+      font-size: 13px;
+      color: #94a3b8;
+      margin-top: 4px;
+    }
+    .steps-container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .step-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 12px;
+      padding: 14px 16px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      position: relative;
+    }
+    .step-card:hover {
+      background: rgba(255, 255, 255, 0.07);
+      border-color: rgba(99, 102, 241, 0.4);
+      transform: translateY(-1px);
+    }
+    .step-card.active {
+      background: rgba(99, 102, 241, 0.15);
+      border-color: #6366f1;
+      box-shadow: 0 0 20px rgba(99, 102, 241, 0.2);
+    }
+    .step-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+    .step-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      color: #818cf8;
+    }
+    .parts-pill {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      color: #cbd5e1;
+    }
+    .step-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+    .step-desc {
+      font-size: 12px;
+      color: #94a3b8;
+      line-height: 1.4;
+    }
+    #viewport-container {
+      flex: 1;
+      height: 100vh;
+      position: relative;
+      background: radial-gradient(circle at center, #1a1e26 0%, #0d0f12 100%);
+    }
+    #webgl-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .hud-overlay {
+      position: absolute;
+      top: 24px;
+      right: 24px;
+      background: rgba(18, 21, 26, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(12px);
+      border-radius: 12px;
+      padding: 16px 20px;
+      max-width: 340px;
+      pointer-events: none;
+    }
+    .hud-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+    .hud-detail {
+      font-size: 12px;
+      color: #94a3b8;
+      line-height: 1.4;
+      margin-bottom: 12px;
+    }
+    .hud-metrics {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+    }
+    .metric-box {
+      background: rgba(255, 255, 255, 0.04);
+      padding: 8px 10px;
+      border-radius: 6px;
+    }
+    .metric-val {
+      color: #38bdf8;
+      font-weight: 700;
+      font-size: 13px;
+    }
+    .controls-hint {
+      position: absolute;
+      bottom: 24px;
+      left: 24px;
+      background: rgba(18, 21, 26, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 12px;
+      color: #64748b;
+      backdrop-filter: blur(8px);
+      pointer-events: none;
+    }
+    #loading-spinner {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(18, 21, 26, 0.9);
+      padding: 20px 32px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      display: none;
+      font-size: 14px;
+      font-weight: 600;
+      color: #818cf8;
+      z-index: 20;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="sidebar">
+    <div class="sidebar-header">
+      <div class="badge">Pipeline Progression</div>
+      <h1>P3-SAM 3D Segmentation</h1>
+      <p class="subtitle">Sideboard / Cabinet (854k faces)</p>
+    </div>
+
+    <div class="steps-container" id="steps-list">
+      <!-- Populated via JS -->
+    </div>
+  </div>
+
+  <div id="viewport-container">
+    <canvas id="webgl-canvas"></canvas>
+    
+    <div class="hud-overlay" id="hud">
+      <div class="hud-title" id="hud-name">Step Name</div>
+      <div class="hud-detail" id="hud-desc">Description of method impact.</div>
+      <div class="hud-metrics">
+        <div class="metric-box">
+          <div style="color:#64748b">PARTS</div>
+          <div class="metric-val" id="hud-parts">--</div>
+        </div>
+        <div class="metric-box">
+          <div style="color:#64748b">FACES</div>
+          <div class="metric-val">854,828</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="controls-hint">
+      Left Click + Drag: Orbit &nbsp;|&nbsp; Right Click + Drag: Pan &nbsp;|&nbsp; Scroll: Zoom
+    </div>
+
+    <div id="loading-spinner">Loading 3D GLB Model...</div>
+  </div>
+
+  <script>
+    const stepsData = [
+      {
+        id: "step1",
+        step_num: "Step 1",
+        title: "Baseline P3-SAM",
+        parts: 19,
+        desc: "Single-mask greedy choice per prompt. Misses thin horizontal crossbar (swallowed into post).",
+        glb: "/outputs/complete_pipeline_showcase/Step1_Baseline_P3SAM.glb"
+      },
+      {
+        id: "step2",
+        step_num: "Step 2",
+        title: "Multi-Mask + Stability",
+        parts: 22,
+        desc: "All 3 mask proposals retained per prompt. Stability score filtering at +/- 0.05 prevents over-pruning.",
+        glb: "/outputs/complete_pipeline_showcase/Step2_MultiMask_Stability.glb"
+      },
+      {
+        id: "step3",
+        step_num: "Step 3",
+        title: "Graph Cut Refinement",
+        parts: 21,
+        desc: "Dual mesh graph MRF with dihedral normal crease weighting snaps boundaries to geometric edges.",
+        glb: "/outputs/complete_pipeline_showcase/Step3_GraphCut_Refinement.glb"
+      },
+      {
+        id: "step4",
+        step_num: "Step 4 (Final Fine)",
+        title: "Second-Pass Prompting",
+        parts: 23,
+        desc: "Targeted sampling in uncertainty regions reuses cached Sonata features. Fully recovers thin crossbar.",
+        glb: "/outputs/complete_pipeline_showcase/Step4_SecondPass_TargetedPrompting.glb"
+      },
+      {
+        id: "step5a",
+        step_num: "Step 5a",
+        title: "Hierarchical L3 (Fine)",
+        parts: 22,
+        desc: "Base structural parts decomposition (drawers, shelves, legs, divider slats).",
+        glb: "/outputs/complete_pipeline_showcase/Step5a_Hierarchical_Level3_Fine.glb"
+      },
+      {
+        id: "step5b",
+        step_num: "Step 5b (Final Assembly)",
+        title: "Hierarchical L2 (Medium)",
+        parts: 5,
+        desc: "Functional assembly grouping with topological adjacency (0 disconnected components across air gaps).",
+        glb: "/outputs/complete_pipeline_showcase/Step5b_Hierarchical_Level2_Medium.glb"
+      },
+      {
+        id: "step5c",
+        step_num: "Step 5c",
+        title: "Hierarchical L1 (Coarse)",
+        parts: 2,
+        desc: "Macro-assembly decomposition: Outer Carcass & Legs vs Internal Drawer/Shelving Core.",
+        glb: "/outputs/complete_pipeline_showcase/Step5c_Hierarchical_Level1_Coarse.glb"
+      }
+    ];
+
+    let currentModel = null;
+    let scene, camera, renderer, controls;
+    const canvas = document.getElementById("webgl-canvas");
+    const container = document.getElementById("viewport-container");
+    const spinner = document.getElementById("loading-spinner");
+
+    function initThree() {
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(40, container.clientWidth / container.clientHeight, 0.01, 100);
+      camera.position.set(2.2, 1.4, 2.8);
+
+      renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });
+      renderer.setSize(container.clientWidth, container.clientHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.outputEncoding = THREE.sRGBEncoding;
+
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.target.set(0, 0, 0);
+
+      // Lighting
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.75);
+      scene.add(ambientLight);
+
+      const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.85);
+      dirLight1.position.set(4, 8, 5);
+      scene.add(dirLight1);
+
+      const dirLight2 = new THREE.DirectionalLight(0x90b0ff, 0.4);
+      dirLight2.position.set(-4, -2, -4);
+      scene.add(dirLight2);
+
+      // Grid Floor
+      const grid = new THREE.GridHelper(6, 20, 0x334155, 0x1e293b);
+      grid.position.y = -0.55;
+      scene.add(grid);
+
+      window.addEventListener('resize', onWindowResize);
+      animate();
+    }
+
+    function onWindowResize() {
+      camera.aspect = container.clientWidth / container.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(container.clientWidth, container.clientHeight);
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+
+    const loader = new THREE.GLTFLoader();
+
+    function loadGLB(url, step) {
+      spinner.style.display = "block";
+      loader.load(url, (gltf) => {
+        spinner.style.display = "none";
+        if (currentModel) {
+          scene.remove(currentModel);
+        }
+        currentModel = gltf.scene;
+
+        // Auto-center and normalize size
+        const box = new THREE.Box3().setFromObject(currentModel);
+        const center = box.getCenter(new THREE.Vector3());
+        currentModel.position.sub(center);
+
+        scene.add(currentModel);
+
+        // Update HUD
+        document.getElementById("hud-name").textContent = `${step.step_num}: ${step.title}`;
+        document.getElementById("hud-desc").textContent = step.desc;
+        document.getElementById("hud-parts").textContent = step.parts;
+      }, undefined, (err) => {
+        spinner.style.display = "none";
+        console.error("Error loading GLB:", err);
+      });
+    }
+
+    function renderSidebar() {
+      const list = document.getElementById("steps-list");
+      stepsData.forEach((s, idx) => {
+        const card = document.createElement("div");
+        card.className = "step-card" + (idx === 3 ? " active" : "");
+        card.innerHTML = `
+          <div class="step-meta">
+            <span class="step-tag">${s.step_num}</span>
+            <span class="parts-pill">${s.parts} Parts</span>
+          </div>
+          <div class="step-title">${s.title}</div>
+          <div class="step-desc">${s.desc}</div>
+        `;
+        card.addEventListener("click", () => {
+          document.querySelectorAll(".step-card").forEach(c => c.classList.remove("active"));
+          card.classList.add("active");
+          loadGLB(s.glb, s);
+        });
+        list.appendChild(card);
+      });
+    }
+
+    initThree();
+    renderSidebar();
+    // Load Step 4 (Targeted Prompting with all thin parts recovered) by default
+    loadGLB(stepsData[3].glb, stepsData[3]);
+  </script>
+</body>
+</html>
