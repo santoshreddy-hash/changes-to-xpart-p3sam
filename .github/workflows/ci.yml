@@ -1,0 +1,21 @@
+# Unit tests that need no GPU. The GPU end-to-end test skips itself on a runner without CUDA.
+# NOTE: written on a machine without access to GitHub Actions; first run may need small fixes.
+name: tests
+on:
+  push:
+  pull_request:
+jobs:
+  cpu-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy==1.26.4 scipy scikit-learn trimesh opencv-python-headless
+          python -m pip install gco-wrapper || echo "gco-wrapper unavailable: graph-cut tests will be skipped"
+      - name: Run tests
+        run: python -m unittest discover -s tests -t . -v

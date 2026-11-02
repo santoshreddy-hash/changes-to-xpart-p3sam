@@ -17,6 +17,10 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(balanced.features.enabled)
         self.assertFalse(fast.features.enabled)
         self.assertLess(fast.reprompt.rounds, balanced.reprompt.rounds)
+        precise = SegmentConfig.preset("precise")
+        self.assertFalse(precise.reprompt.enabled)
+        self.assertFalse(precise.features.enabled)
+        self.assertTrue(precise.polish.enabled)
         with self.assertRaises(InvalidInputError):
             SegmentConfig.preset("turbo")
 

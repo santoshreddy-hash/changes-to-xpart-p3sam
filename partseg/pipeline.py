@@ -149,6 +149,14 @@ def segment_mesh(mesh, config: SegmentConfig | None = None, model=None,
     from .export import build_parts_table
 
     parts = build_parts_table(mesh, face_ids, graph)
+    if 0 < cfg.target_parts < len(parts):
+        from .hierarchy import merge_to_target, part_feature_means
+
+        feats_np = feats_gpu.float().cpu().numpy()
+        means = part_feature_means(feats_np, face_ids[face_idx], len(parts))
+        face_ids = renumber_by_area(merge_to_target(face_ids, parts, means, cfg.target_parts), graph.areas)
+        parts = build_parts_table(mesh, face_ids, graph)
+        stage_counts["final"] = int(len(parts))
     metrics = boundary_stats(face_ids, graph)
     metrics["disconnected_parts"] = int(count_disconnected(face_ids, graph))
     report = {

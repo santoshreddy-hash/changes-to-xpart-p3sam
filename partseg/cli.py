@@ -27,13 +27,15 @@ def build_parser() -> argparse.ArgumentParser:
                          description="Segment meshes and write parts GLB, labels and reports.")
     seg.add_argument("inputs", nargs="+", help=f"mesh files or folders ({', '.join(SUPPORTED_EXTENSIONS)})")
     seg.add_argument("-o", "--output", required=True, help="output folder (one sub-folder per input when batching)")
-    seg.add_argument("--preset", default="balanced", choices=["balanced", "fast"], help="quality/speed preset")
+    seg.add_argument("--preset", default="balanced", choices=["balanced", "fast", "precise"], help="balanced (default), fast, or precise (no extra splitting)")
     seg.add_argument("--config", help="JSON file with config overrides")
     seg.add_argument("--set", dest="overrides", action="append", default=[], metavar="SECTION.KEY=VALUE",
                      help="override one config value, e.g. polish.stay_cost=0.05 (repeatable)")
     seg.add_argument("--seed", type=int, help="random seed (default 42)")
     seg.add_argument("--keep-materials", action="store_true", help="keep source textures/colours in the parts GLB")
     seg.add_argument("--no-preview", action="store_true", help="skip the preview image")
+    seg.add_argument("--parts", type=int, metavar="N", help="merge neighbouring parts down to at most N parts")
+    seg.add_argument("--seal", action="store_true", help="also write <name>_parts_sealed.glb with cut surfaces capped")
     seg.add_argument("--up-axis", choices=["auto", "y", "z"], help="up axis for the preview render only")
     seg.add_argument("--json", action="store_true", help="print a machine-readable summary on stdout")
     verbosity = seg.add_mutually_exclusive_group()
@@ -73,6 +75,10 @@ def _build_config(args) -> SegmentConfig:
         cfg.export.keep_materials = True
     if args.no_preview:
         cfg.export.preview = False
+    if args.parts is not None:
+        cfg.target_parts = args.parts
+    if args.seal:
+        cfg.export.seal = True
     if args.up_axis:
         cfg.export.up_axis = args.up_axis
     cfg.validate()

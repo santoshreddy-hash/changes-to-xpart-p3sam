@@ -17,6 +17,8 @@ python -m partseg segment chair.glb -o out/chair
 python -m partseg segment models/ -o out            # a folder: one sub-folder per mesh, model loaded once
 python -m partseg segment chair.glb -o out --preset fast
 python -m partseg segment chair.glb -o out --set polish.stay_cost=0.04 --keep-materials
+python -m partseg segment chair.glb -o out --parts 6     # merge neighbouring parts down to at most 6
+python -m partseg segment chair.glb -o out --seal        # also write a GLB with the cut surfaces capped
 ```
 
 Exit codes: `0` success, `1` some files in a batch failed, `2` bad input or config,
@@ -49,6 +51,16 @@ print(len(result.parts), result.stage_seconds["total"], result.warnings)
 
 Both JSON files carry `schema_version`.
 
+### Optional outputs (off by default, results unchanged unless you ask)
+
+- `--parts N` merges neighbouring parts (Ward linkage on mean P3-SAM features, only across parts that touch)
+  until at most N remain. It can only reduce the count.
+- `--seal` writes `<name>_parts_sealed.glb`: every open cut loop is closed with a triangle fan so parts become
+  closed solids where possible. `parts.json` then records `watertight_before`, `watertight_sealed` and `cap_faces`.
+  Caps are topological closures, so they are sensible for flat cuts and rough for strongly curved ones.
+- To keep smaller parts (knobs, screws) lower `--set polish.min_area_frac=0.001`; the default 0.003 merges
+  attached fragments below 0.3% of the surface into a neighbour.
+
 ## What the pipeline does
 
 1. **P3-SAM, multi-mask pass**: stability filtering, second-pass prompting, graph cut. Backbone features are
@@ -59,7 +71,8 @@ Both JSON files carry `schema_version`.
 4. **Boundary clean-up**: crack-tolerant component splitting, fragment merging, crease snapping, a
    crease-aware graph cut and label diffusion. Flat panels (a table top) are never split.
 
-Presets: `balanced` (default) and `fast` (one re-prompt round, no feature splitting, 4-pass averaging).
+Presets: `balanced` (default), `fast` (one re-prompt round, no feature splitting, 4-pass averaging) and
+`precise` (no re-prompting or feature splitting, clean-up only; see the ground-truth results below).
 Every tunable is in `partseg/config.py`; override with `--set section.key=value` or `--config file.json`.
 
 ## Measured behaviour (8-mesh benchmark, RTX 4090)
@@ -71,6 +84,32 @@ Run `python benchmarks/run_suite.py` then `python benchmarks/build_grid.py`. Res
 - Time per mesh: 3 to 33 s once the model is loaded, 18.5 s on average (the 854k-face sideboard takes about 31 s).
 - Every final part is one connected piece, apart from a few specks under 0.01% of the surface that are
   merged into the nearest part.
+
+## Ground-truth benchmark
+
+`python benchmarks/eval_parts.py` builds 8 procedural assemblies with exact part labels
+(`benchmarks/synthetic.py`) and scores each configuration against them. Synthetic parts are far cleaner than
+real assets, so read the numbers as a regression and ablation signal, not as real-world accuracy.
+
+| Configuration | ARI | Part recall (IoU) | Part precision (IoU) | True parts recovered |
+|---|---|---|---|---|
+| Baseline P3-SAM | 0.961 | 0.942 | 0.994 | 38 / 42 |
+| Enhanced P3-SAM | 0.988 | 0.968 | 0.956 | 39 / 42 |
+| `balanced` (default) | 0.755 | 0.707 | 0.457 | 25 / 42 |
+| `precise` | 0.986 | 0.965 | 0.966 | 39 / 42 |
+
+**What this means.** On clean geometry where P3-SAM is already right, the default's re-prompting and feature
+splitting stages add false splits (a 3-part dumbbell becomes 16 parts, a 3-part lamp becomes 10). They were
+tuned by eye on 8 real meshes where P3-SAM under-splits (a deer, characters), where they do add real parts, but
+that gain has not been measured against ground truth. If your assets are clean, hard-surface or CAD-like,
+use `--preset precise`. The default favours more parts over precision.
+
+`benchmarks/run_suite.py` remains the visual benchmark on the 8 real meshes.
+
+## Deployment files (not verified here)
+
+`Dockerfile` and `.github/workflows/ci.yml` were written on a Windows machine without Docker or Actions access,
+so neither has been run. The CI job runs only the tests that need no GPU.
 
 ## Web app
 
@@ -90,9 +129,14 @@ skipped when no GPU or sample mesh is present.
 
 ## Known limits
 
+- **The default can over-split clean geometry** (see the ground-truth table); use `--preset precise` there.
 - **Not bit-reproducible across separate runs.** Seeds are fixed and a run is repeatable inside one process,
   but GPU kernel selection can differ between processes, so a few boundaries may move or the part count may
-  change by one or two. Treat the output as stable, not as byte-identical.
+  change by one or two. Treat the output as stable, not as byte-identical. Investigation so far: the backbone
+  features themselves differ between processes (max difference about 0.2, in discrete jumps, in roughly a third
+  of processes), independent of every later stage. Forcing spconv's MaskImplicitGemm kernel or fp32 accumulation did
+  not remove it on all meshes (`MaskSplitImplicitGemm` is unsupported for this layer, `Native` is worse).
+  Likely cause: timing-based kernel auto-tuning; not yet fixed.
 - P3-SAM's decoder does not recognise some anatomical boundaries (a deer's torso, neck and head are one part);
   the pipeline keeps that rather than invent splits.
 - Seams that follow irregular geometry (a roughly cut board edge) stay irregular because they lie on real creases.

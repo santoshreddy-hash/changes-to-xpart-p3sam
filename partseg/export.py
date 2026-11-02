@@ -133,6 +133,20 @@ def write_outputs(out_dir: Path, stem: str, mesh: trimesh.Trimesh, face_ids: np.
 
     segmented_mesh(mesh, face_ids).export(str(paths["segmented_glb"]))
 
+    if cfg.seal:  # opt-in: cap the open cut surfaces so each part is a closed solid where possible
+        from .seal import seal_parts
+
+        sealed, seal_stats = seal_parts(mesh, face_ids, parts)
+        sealed_scene = trimesh.Scene()
+        for p in parts:
+            sub = sealed[p["id"]]
+            sub.visual = trimesh.visual.ColorVisuals(
+                mesh=sub, face_colors=np.tile(np.array([*colors[p["id"]], 255], dtype=np.uint8), (len(sub.faces), 1)))
+            sealed_scene.add_geometry(sub, node_name=p["name"], geom_name=p["name"])
+            p.update(seal_stats[p["id"]])
+        paths["parts_sealed_glb"] = out_dir / f"{stem}_parts_sealed.glb"
+        sealed_scene.export(str(paths["parts_sealed_glb"]))
+
     np.save(paths["face_ids"], face_ids.astype(np.int32))
     paths["parts_json"].write_text(json.dumps({
         "schema_version": SCHEMA_VERSION,

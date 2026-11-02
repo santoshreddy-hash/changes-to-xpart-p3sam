@@ -1,0 +1,7 @@
+.git
+outputs
+uploads
+All_Input_GLBs*
+*.zip
+**/__pycache__
+*.pyc

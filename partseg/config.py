@@ -106,6 +106,7 @@ class ExportConfig:
     preview: bool = True
     preview_size: int = 640
     up_axis: str = "auto"  # auto | y | z (only affects the preview render)
+    seal: bool = False  # also write <name>_parts_sealed.glb with the cut surfaces capped
 
 
 @dataclass
@@ -117,6 +118,7 @@ class SegmentConfig:
     polish: PolishConfig = field(default_factory=PolishConfig)
     export: ExportConfig = field(default_factory=ExportConfig)
     max_faces: int = 2_000_000
+    target_parts: int = 0  # 0 = keep every part; N > 0 merges neighbouring parts down to N
 
     # ------------------------------------------------------------------ presets
     @classmethod
@@ -130,7 +132,11 @@ class SegmentConfig:
             cfg.features.enabled = False
             cfg.p3sam.feature_tta = 4
             return cfg
-        raise InvalidInputError(f"Unknown preset '{name}'. Available presets: balanced, fast")
+        if name == "precise":  # no extra splitting: clean-up only, best on the ground-truth benchmark
+            cfg.reprompt.enabled = False
+            cfg.features.enabled = False
+            return cfg
+        raise InvalidInputError(f"Unknown preset '{name}'. Available presets: balanced, fast, precise")
 
     # ---------------------------------------------------------------- (de)serialize
     def to_dict(self) -> dict:
@@ -195,6 +201,8 @@ class SegmentConfig:
             problems.append("export.up_axis must be auto, y or z")
         if self.max_faces < 1:
             problems.append("max_faces must be positive")
+        if self.target_parts < 0:
+            problems.append("target_parts must be 0 (off) or a positive number")
         if problems:
             raise InvalidInputError("Invalid configuration: " + "; ".join(problems))
 

@@ -6,6 +6,7 @@ import trimesh
 from tests import helpers
 from partseg.config import PolishConfig
 from partseg.polish import (
+    GCO_AVAILABLE,
     MeshGraph,
     boundary_stats,
     count_disconnected,
@@ -64,6 +65,7 @@ class FragmentTests(unittest.TestCase):
         self.assertEqual(len(np.unique(out)), 2)
 
 
+@unittest.skipUnless(GCO_AVAILABLE, "gco is not installed")
 class GraphCutTests(unittest.TestCase):
     def test_graph_cut_straightens_a_jagged_boundary(self):
         # Regression guard: gco silently returned its input for int32 arrays, which made this a no-op.
@@ -100,6 +102,7 @@ class PolishLabelsTests(unittest.TestCase):
         areas = [self.graph.areas[out == l].sum() for l in np.unique(out)]
         self.assertEqual(areas, sorted(areas, reverse=True))   # label 0 is the largest part
 
+    @unittest.skipUnless(GCO_AVAILABLE, "gco is not installed")
     def test_boundary_gets_shorter(self):
         before = boundary_stats(self.noisy, self.graph)["boundary_len_pct"]
         out = polish_labels(self.noisy, self.graph, PolishConfig())
