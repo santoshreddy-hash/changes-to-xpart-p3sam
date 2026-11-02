@@ -25,6 +25,8 @@ from multimesh_suite_base import TEST_MESHES  # noqa: E402
 OUT = os.path.join(ROOT, "outputs", "final_pipeline_suite")
 CACHE = os.path.join(OUT, "cache")
 SUB_KW = dict(stab_thresh=0.75, min_iou=0.15, contain=0.28, n_prompts=64, max_new=8)
+ROUNDS = 3
+FEAT_KW = dict(tau=1.3, tau_big=1.2, k_max=6, min_frac=0.10, iou_min=0.4)
 VIEWS = [(35, 18), (215, 18)]
 COLS = ["1. Baseline P3-SAM", "2. Enhanced (before polish)", "3. FINAL (re-prompt + clean boundaries)"]
 
@@ -97,9 +99,19 @@ def main():
         graph = pp.MeshGraph(mesh)
         d = get_stage_outputs(item, auto_mask, mesh, n_pts, n_prompts, args.recompute)
         t0 = time.perf_counter()
-        sub, rep = fp.subdivide_large_parts(
-            auto_mask.model, d["feats"], d["pts"], d["fi"], d["enh"], graph,
-            face_normals=np.asarray(mesh.face_normals), **SUB_KW
+        sub, rep = d["enh"], {}
+        for _round in range(ROUNDS):
+            sub, rep_i = fp.subdivide_large_parts(
+                auto_mask.model, d["feats"], d["pts"], d["fi"], sub, graph,
+                face_normals=np.asarray(mesh.face_normals), **SUB_KW
+            )
+            if not rep_i:
+                break
+            for k_, v_ in rep_i.items():
+                rep[f"r{_round}:{k_}"] = v_
+        sub, frep = fp.subdivide_by_features(
+            d["feats_np"].astype(np.float32), d["pts"], d["fi"], sub, graph,
+            np.asarray(mesh.face_normals), model=auto_mask.model, feats_gpu=d["feats"], **FEAT_KW
         )
         final = fp.polish(sub, graph, n_pts)
         t_post = time.perf_counter() - t0
@@ -145,6 +157,7 @@ def main():
         rec = {
             "id": mid, "name": item["name"], "category": item["category"], "faces": F,
             "subdivided_parts": {str(k): v for k, v in rep.items()},
+            "feature_split": {str(k): v[0] for k, v in frep.items()},
             "parts": {k: stats[k]["parts"] for k in stats},
             "tiny_fragments": {k: stats[k]["tiny_fragments"] for k in stats},
             "disconnected_parts": disc,

@@ -27,7 +27,7 @@ tp = sum(r["parts"]["base"] for r in records), sum(r["parts"]["enh"] for r in re
 header = np.full((70, grid.shape[1], 3), (18, 19, 22), dtype=np.uint8)
 cv2.putText(header, "P3-SAM optimized pipeline: baseline vs enhanced vs FINAL (re-prompt + clean boundaries)",
             (14, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (255, 255, 255), 2, cv2.LINE_AA)
-cv2.putText(header, f"Total parts over 8 meshes: baseline {tp[0]} -> enhanced {tp[1]} -> final {tp[2]}   (every part is one connected piece; tiny specks merged)",
+cv2.putText(header, f"Total parts over 8 meshes: baseline {tp[0]} -> enhanced {tp[1]} -> final {tp[2]}   (deterministic: repeat runs give identical labels)",
             (14, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1, cv2.LINE_AA)
 grid = np.concatenate([header, grid], axis=0)
 path = os.path.join(OUT, "FINAL_master_grid.png")
