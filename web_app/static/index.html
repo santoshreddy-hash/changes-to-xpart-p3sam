@@ -117,6 +117,7 @@
         </span>
         <select id="topbar-pipeline-select" class="tool-select pipeline-select-styled" title="Select segmentation pipeline: Tripo Exact, X-Part Fast, X-Part Lossless, or Original X-Part Baseline">
           <option value="tripo_exact" selected>⚡ Tripo Exact Partitioning (~10s)</option>
+          <option value="clean_parts">✨ Clean Parts - smooth boundaries (~5-40s)</option>
           <option value="xpart_fast">🚀 X-Part Fast DiT (~35s)</option>
           <option value="xpart_lossless">💎 X-Part Lossless GPU (~72s)</option>
           <option value="xpart_baseline">🐢 Original X-Part Baseline (~185s)</option>
@@ -204,6 +205,7 @@
       <div style="margin-top: 8px;">
         <select id="sidebar-pipeline-select" class="sidebar-pipeline-dropdown" title="Choose which segmentation pipeline will run on input">
           <option value="tripo_exact" selected>⚡ Tripo Exact Partitioning (~10s, Original Textures)</option>
+          <option value="clean_parts">✨ Clean Parts - smooth boundaries (~5-40s, Original Textures)</option>
           <option value="xpart_fast">🚀 X-Part Fast Mode (~35s, 20 steps, 384 res)</option>
           <option value="xpart_lossless">💎 X-Part Lossless GPU (~72s, 50 steps, 512 res)</option>
           <option value="xpart_baseline">🐢 Original X-Part Baseline (~185s, CPU MC)</option>

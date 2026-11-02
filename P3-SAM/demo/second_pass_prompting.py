@@ -247,7 +247,7 @@ def sample_second_pass_prompts(
     cand_pts = points[cand_indices]
     
     # Run FPS within the candidate uncertain points to disperse prompts
-    fps_sub_idx = fpsample.fps_sampling(cand_pts, target_count)
+    fps_sub_idx = fpsample.fps_sampling(cand_pts, target_count, start_idx=0)
     selected_indices = cand_indices[fps_sub_idx]
     additional_prompts = points[selected_indices]
     

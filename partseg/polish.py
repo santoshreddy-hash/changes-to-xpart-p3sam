@@ -1,9 +1,10 @@
 """
-Geometry-only post-processing for P3-SAM face labels.
+Geometry post-processing for P3-SAM part labels.
 
-Pipeline: split_disconnected -> merge_small_regions -> crease_graphcut_polish.
-All functions work on a vertex-welded adjacency so UV/normal seams in GLB files
-do not break connectivity. Face indices are never changed.
+Turns noisy per-face labels into clean parts: crack-tolerant component splitting,
+fragment merging, crease snapping, a crease-aware graph cut and label diffusion.
+All graph operations use a vertex-welded face adjacency, so UV / normal seams in
+GLB files do not break connectivity. Face indices are never changed.
 """
 
 import numpy as np
@@ -19,8 +20,6 @@ try:
 except ImportError:
     GCO_AVAILABLE = False
 
-
-LAST_DIAG = {}
 
 
 class MeshGraph:
@@ -106,15 +105,26 @@ def label_components(face_ids, graph, close_cracks=True):
             x = parent[x]
         return x
 
+    def union(c1, c2):
+        r1, r2 = find(c1), find(c2)
+        if r1 != r2:
+            parent[r1] = r2
+
     for l in np.unique(face_ids[face_ids >= 0]):
         faces_l = np.where(face_ids == l)[0]
         comps_l = np.unique(comp[faces_l])
         if len(comps_l) < 2:
             continue
-        fv = graph.fw[faces_l]
-        vids = np.unique(fv.ravel())
+        # 1) fragments that meet at a shared vertex (non-manifold edges, pinches) are one part
+        corners = np.stack([graph.fw[faces_l].ravel(), np.repeat(comp[faces_l], 3)], axis=1)
+        pairs = np.unique(corners, axis=0)  # sorted by vertex, then component
+        same_vertex = pairs[1:, 0] == pairs[:-1, 0]
+        for c1, c2 in zip(pairs[:-1, 1][same_vertex], pairs[1:, 1][same_vertex]):
+            union(c1, c2)
+        # 2) fragments separated by a hairline crack: vertices closer than one triangle size
+        vids, first = np.unique(pairs[:, 0], return_index=True)
         vcomp = np.zeros(len(graph.vw), dtype=np.int64)
-        vcomp[fv.ravel()] = np.repeat(comp[faces_l], 3)
+        vcomp[vids] = pairs[first, 1]
         pts = graph.vw[vids]
         tree = cKDTree(pts)
         k = min(8, len(vids))
@@ -124,9 +134,7 @@ def label_components(face_ids, graph, close_cracks=True):
             w = nbr[:, j]
             ok = (vcomp[vids] != vcomp[vids[w]]) & (dist[:, j] <= np.maximum(sv, sv[w]))
             for c1, c2 in zip(vcomp[vids[ok]], vcomp[vids[w[ok]]]):
-                r1, r2 = find(c1), find(c2)
-                if r1 != r2:
-                    parent[r1] = r2
+                union(c1, c2)
     roots = np.array([find(c) for c in range(n_comp)])
     out = np.where(comp >= 0, roots[np.clip(comp, 0, n_comp - 1)], -1)
     return out
@@ -324,11 +332,6 @@ def crease_graphcut_polish(
         edges, ew, data, pairwise, n_iter=n_iter, algorithm="expansion", init_labels=init
     )
     res = np.asarray(res, dtype=np.int64)
-
-    def _energy(lab):
-        return float(data[np.arange(nb), lab].sum() + (ew * (lab[edges[:, 0]] != lab[edges[:, 1]])).sum())
-
-    LAST_DIAG.update(nb=nb, L=L, n_edges=len(edges), e_init=_energy(init.astype(np.int64)), e_final=_energy(res))
     new_ids = ids.copy()
     new_ids[band_faces] = labels[res]
     return new_ids
@@ -477,5 +480,60 @@ def smooth_boundaries(face_ids, graph, band=5, hops=4, rounds=2, sigma=0.55, flo
     return ids
 
 
-def suggest_band(n_faces, n_points):
-    return int(np.clip(round(2.5 * np.sqrt(n_faces / max(n_points, 1))) + 3, 4, 12))
+def smoothing_scale(graph, radius=0.02):
+    """Boundary-smoothing radius in face rings, scaled to the mesh's physical size."""
+    sigma = float(np.clip(radius * np.sqrt(graph.total_area) / graph.median_len, 1.0, 12.0))
+    hops = int(np.clip(1.5 * sigma ** 2, 3, 60))
+    band = int(np.clip(round(2.5 * sigma) + 2, 4, 14))
+    return sigma, hops, band
+
+
+def polish_labels(face_ids, graph, cfg, log=None):
+    """
+    Full clean-up chain applied to raw part labels (cfg is a PolishConfig).
+    Returns labels renumbered so that label 0 is the largest part.
+    """
+    min_faces = max(12, int(graph.n_faces * 0.0002))
+    _, hops, band = smoothing_scale(graph, cfg.smooth_radius)
+    ids = split_disconnected(face_ids, graph)
+    ids = merge_small_regions(ids, graph, min_area_frac=cfg.min_area_frac, min_faces=min_faces,
+                              speck_frac=cfg.speck_frac)
+    ids = absorb_spiky_islands(ids, graph)
+
+    # large flat panels (table tops, back boards) may gain faces in their interior never lose them;
+    # their boundary band stays free so edges can still straighten
+    protected = np.zeros(graph.n_faces, dtype=bool)
+    for label in np.unique(ids[ids >= 0]):
+        m = ids == label
+        if (graph.areas[m].sum() >= cfg.panel_area * graph.total_area
+                and planar_fraction(ids, label, graph.normals, graph) >= cfg.panel_planar):
+            protected |= m
+    a_, b_ = graph.adj[:, 0], graph.adj[:, 1]
+    edge_diff = (ids[a_] != ids[b_]) & (ids[a_] >= 0) & (ids[b_] >= 0)
+    if protected.any() and edge_diff.any():
+        seeds = np.unique(np.concatenate([a_[edge_diff], b_[edge_diff]]))
+        dist = dijkstra(graph.geodesic_sparse(), directed=False, indices=seeds, min_only=True,
+                        limit=cfg.panel_margin * graph.scale)
+        protected &= ~np.isfinite(dist)
+    anchor = ids.copy()
+
+    def keep_panels(x):
+        x = x.copy()
+        lost = protected & (x != anchor)
+        x[lost] = anchor[lost]
+        return x
+
+    ids = keep_panels(snap_to_patches(ids, graph))
+    ids = keep_panels(snap_spill_to_creases(ids, graph))
+    if GCO_AVAILABLE:
+        ids = keep_panels(crease_graphcut_polish(
+            ids, graph, band=band, sigma=cfg.crease_sigma, crease_floor=cfg.crease_floor,
+            stay_cost=cfg.stay_cost, length_weight=cfg.length_weight))
+    elif log is not None:
+        log.warning("gco is not installed: skipping the crease-aware graph cut (boundaries will be rougher)")
+    ids = keep_panels(smooth_boundaries(ids, graph, band=band, hops=hops, sigma=cfg.crease_sigma))
+    ids = split_disconnected(ids, graph)
+    ids = merge_small_regions(ids, graph, min_area_frac=cfg.min_area_frac, min_faces=min_faces,
+                              speck_frac=cfg.speck_frac)
+    ids = absorb_spiky_islands(ids, graph)
+    return renumber_by_area(ids, graph.areas)

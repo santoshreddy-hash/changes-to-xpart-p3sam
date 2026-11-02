@@ -1014,6 +1014,8 @@ def mesh_sam(
     curvature_threshold=0.25,
     min_region_size=15,
     max_second_pass_iterations=1,
+    feature_tta=1,
+    feature_seed=None,
 ):
     if save_path:
         os.makedirs(save_path, exist_ok=True)
@@ -1047,7 +1049,34 @@ def mesh_sam(
         print(f"点数：{point_num} 面片数：{mesh.faces.shape[0]}")
 
     with Timer("获取特征"):
-        _feats = get_feat(model, _points, normals)
+        # Sonata's GridSample picks a random point per voxel from the global NumPy RNG;
+        # seed it locally (and restore) so features, and therefore labels, are reproducible.
+        _rng_state = np.random.get_state()
+        _torch_state = torch.random.get_rng_state()
+        _cuda_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        feat_seed = seed if feature_seed is None else feature_seed  # sampling and backbone seeds can differ
+        np.random.seed(feat_seed)
+        torch.manual_seed(feat_seed)
+        try:
+            n_tta = max(1, int(feature_tta))
+            if n_tta == 1:
+                _feats = get_feat(model, _points, normals)
+            else:
+                # test-time augmentation: average the backbone features over several voxel-sampling
+                # seeds to cancel the noise of the random per-voxel point choice
+                _first, _acc = None, None
+                for _k in range(n_tta):
+                    np.random.seed(feat_seed + _k)
+                    torch.manual_seed(feat_seed + _k)
+                    _f = get_feat(model, _points, normals)
+                    _first = _f if _first is None else _first
+                    _acc = _f.float() if _acc is None else _acc + _f.float()
+                _feats = (_acc / n_tta).to(_first.dtype)
+        finally:
+            np.random.set_state(_rng_state)
+            torch.random.set_rng_state(_torch_state)
+            if _cuda_state is not None:
+                torch.cuda.set_rng_state_all(_cuda_state)
         mesh.metadata["point_feats"] = _feats.float()
         mesh.metadata["face_idx"] = face_idx
     if show_info:
@@ -1069,7 +1098,7 @@ def mesh_sam(
             print("PCA获取特征颜色")
 
     with Timer("FPS采样提示点"):
-        fps_idx = fpsample.fps_sampling(_points, prompt_num)
+        fps_idx = fpsample.fps_sampling(_points, prompt_num, start_idx=0)
         _point_prompts = _points[fps_idx]
         mesh.metadata["first_pass_prompts"] = _point_prompts
         mesh.metadata["first_pass_prompt_indices"] = fps_idx

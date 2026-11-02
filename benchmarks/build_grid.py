@@ -6,7 +6,10 @@ import os
 import cv2
 import numpy as np
 
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "final_pipeline_suite")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+import sys
+
+OUT = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(ROOT, "outputs", "final_pipeline_suite")
 records = json.load(open(os.path.join(OUT, "final_summary.json")))
 order = ["wooden_sideboard", "vintage_table", "jade_sword", "deer_organic",
          "fall_guy_character", "ceramic_vase", "man_creature", "dining_set"]
@@ -25,9 +28,9 @@ for mid in order:
 grid = np.concatenate(rows, axis=0)
 tp = sum(r["parts"]["base"] for r in records), sum(r["parts"]["enh"] for r in records), sum(r["parts"]["final"] for r in records)
 header = np.full((70, grid.shape[1], 3), (18, 19, 22), dtype=np.uint8)
-cv2.putText(header, "P3-SAM optimized pipeline: baseline vs enhanced vs FINAL (re-prompt + clean boundaries)",
+cv2.putText(header, "P3-SAM optimized pipeline: baseline vs enhanced vs FINAL partseg",
             (14, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (255, 255, 255), 2, cv2.LINE_AA)
-cv2.putText(header, f"Total parts over 8 meshes: baseline {tp[0]} -> enhanced {tp[1]} -> final {tp[2]}   (deterministic: repeat runs give identical labels)",
+cv2.putText(header, f"Total parts over 8 meshes: baseline {tp[0]} -> enhanced {tp[1]} -> final {tp[2]}   (seeded; separate runs can differ by a few parts)",
             (14, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1, cv2.LINE_AA)
 grid = np.concatenate([header, grid], axis=0)
 path = os.path.join(OUT, "FINAL_master_grid.png")

@@ -5,6 +5,21 @@ pipeline wired to use it, based on [Tencent's Hunyuan3D-Part](https://github.com
 See `LICENSE` / `NOTICE` for the original project's license terms (TENCENT HUNYUAN
 NON-COMMERCIAL LICENSE AGREEMENT) -- this repo is a derivative work under those terms.
 
+## Clean part segmentation (`partseg`)
+
+`partseg` is the production entry point: P3-SAM plus guarded sub-part splitting and boundary clean-up,
+with a CLI, a Python API, structured outputs (named-part GLB, labels, JSON reports) and a **Clean Parts**
+pipeline in the web app.
+
+```bash
+pip install -r requirements-partseg.txt
+python -m partseg doctor --load-model
+python -m partseg segment model.glb -o out/model
+python -m unittest discover -s tests -t .
+```
+
+Full guide, output format, config reference and known limits: [`docs/PARTSEG.md`](docs/PARTSEG.md).
+
 ## What's in here
 
 - **`P3-SAM/`** -- the optimized P3-SAM segmentation pipeline.

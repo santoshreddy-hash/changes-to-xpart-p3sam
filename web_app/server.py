@@ -277,12 +277,20 @@ def run_pipeline_sync(job_id, mesh_path, params):
             "--save_face_ids", str(p3sam_out_dir / f"{stem}_face_ids.npy")
         ]
         env = os.environ.copy()
-        env["TEMP"] = "C:\\Users\\7950x_RTX4090\\AppData\\Local\\Temp"
-        env["TMP"] = "C:\\Users\\7950x_RTX4090\\AppData\\Local\\Temp"
+        import tempfile
+        env["TEMP"] = tempfile.gettempdir()
+        env["TMP"] = tempfile.gettempdir()
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
         env["P3SAM_PROMPT_BS"] = "8"
         
+        if mode == "clean_parts":
+            # Clean Parts: the packaged pipeline (P3-SAM + validated splitting + boundary clean-up)
+            cmd_p3sam = [
+                PYTHON_EXE, "-u", "-m", "partseg", "segment", str(p3sam_input_path),
+                "-o", str(p3sam_out_dir), "--no-preview", "--quiet",
+            ]
+            jobs[job_id]["stage"] = "Step 1/3: Running Clean Parts segmentation (P3-SAM + boundary clean-up)..."
         ret_p3, out_p3, err_p3 = run_command_tracked(cmd_p3sam, cwd=ROOT_DIR, env=env, job_id=job_id)
         if ret_p3 != 0:
             raise RuntimeError(f"P3-SAM execution failed (code {ret_p3}): {err_p3 or out_p3}")
@@ -317,7 +325,7 @@ def run_pipeline_sync(job_id, mesh_path, params):
         # -------------------------------------------------------------
         t2_s = time.perf_counter()
         
-        if mode == "tripo_exact" and best_face_ids and best_face_ids.exists():
+        if mode in ("tripo_exact", "clean_parts") and best_face_ids and best_face_ids.exists():
             # PIPELINE 1: Tripo Exact Partitioning (~10.8s Total)
             jobs[job_id]["stage"] = "Step 2/3: Partitioning input mesh into exact Tripo3D parts (preserving textures)..."
             jobs[job_id]["progress"] = 65
@@ -601,6 +609,12 @@ async def start_segmentation(request):
         default_mc = "mc"
         default_chunk = 4
         default_preserve = False
+    elif mode == "clean_parts":
+        default_steps = 50
+        default_res = 512
+        default_mc = "dmc"
+        default_chunk = 16
+        default_preserve = True
     else:
         mode = "tripo_exact"
         default_steps = 50
@@ -633,6 +647,18 @@ async def get_job_status(request):
     return web.json_response(jobs[job_id])
 
 
+async def health_handler(request):
+    """Liveness/readiness probe: reports whether a CUDA GPU is visible and how many jobs are active."""
+    gpu = None
+    try:
+        import torch
+        gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
+    except Exception:
+        pass
+    active = sum(1 for j in jobs.values() if j.get("status") in ("queued", "running"))
+    return web.json_response({"status": "ok", "gpu": gpu, "active_jobs": active})
+
+
 async def index_handler(request):
     """Serve index.html."""
     return web.FileResponse(STATIC_DIR / "index.html")
@@ -643,6 +669,7 @@ def create_app():
     
     # Routes
     app.router.add_get("/", index_handler)
+    app.router.add_get("/api/health", health_handler)
     app.router.add_get("/api/presets", get_presets)
     app.router.add_post("/api/upload", upload_file)
     app.router.add_post("/api/segment", start_segmentation)
