@@ -191,15 +191,18 @@ def get_mask(model, feats, points, point_prompt, iter=1):
 
 
 @torch.no_grad()
-def get_mask_fast(model, feats_gpu, points_gpu, point_prompt, iter=1):
+def get_mask_fast(model, feats_gpu, points_gpu, point_prompt, iter=1, calc_stability=False, stability_offset=0.05, return_probs=False):
     """
     Optimized version of get_mask that avoids re-uploading points from numpy
     and avoids materializing a full repeated [N,K,512]/[N,K,3] copy via expand().
     feats_gpu: [N, 512] cuda tensor (already on GPU)
     points_gpu: [N, 3] cuda tensor (already on GPU, normalized points)
     point_prompt: [K, 3] numpy array (small, cheap to upload per-batch)
-    Returns mask_1, mask_2, mask_3 as [N, K] bool CUDA tensors (NOT moved to cpu),
-    and pred_iou as a [K, 3] CUDA tensor.
+    Returns:
+      mask_1, mask_2, mask_3 as [N, K] bool CUDA tensors (thresholded at > 0.5),
+      pred_iou as a [K, 3] CUDA tensor,
+      and optionally stability_scores as a [K, 3] CUDA tensor if calc_stability=True,
+      and optionally (p1, p2, p3) as [N, K] float CUDA tensors if return_probs=True.
     """
     point_num = points_gpu.shape[0]
     prompt_num = point_prompt.shape[0]
@@ -212,37 +215,54 @@ def get_mask_fast(model, feats_gpu, points_gpu, point_prompt, iter=1):
     points = points.transpose(0, 1)  # [K, N, 3]
     prompt_coord = prompt_coord.transpose(0, 1)  # [K, N, 3]
 
-    mask_1, mask_2, mask_3, pred_iou = model(feats, points, prompt_coord, iter)
+    raw_m1, raw_m2, raw_m3, pred_iou = model(feats, points, prompt_coord, iter)
 
-    mask_1 = mask_1.transpose(0, 1) > 0.5  # [N, K] bool cuda
-    mask_2 = mask_2.transpose(0, 1) > 0.5  # [N, K] bool cuda
-    mask_3 = mask_3.transpose(0, 1) > 0.5  # [N, K] bool cuda
+    p1 = raw_m1.transpose(0, 1)  # [N, K] float in [0, 1]
+    p2 = raw_m2.transpose(0, 1)  # [N, K] float in [0, 1]
+    p3 = raw_m3.transpose(0, 1)  # [N, K] float in [0, 1]
 
+    mask_1 = p1 > 0.5  # [N, K] bool cuda
+    mask_2 = p2 > 0.5  # [N, K] bool cuda
+    mask_3 = p3 > 0.5  # [N, K] bool cuda
+
+    if calc_stability:
+        tau = 0.5
+        delta = stability_offset
+        stabs = []
+        for p in (p1, p2, p3):
+            high_cnt = (p > (tau + delta)).sum(dim=0).float()  # [K]
+            low_cnt = (p > (tau - delta)).sum(dim=0).float()   # [K]
+            stab = torch.where(low_cnt > 0, high_cnt / (low_cnt + 1e-7), torch.zeros_like(low_cnt))
+            stabs.append(stab)
+        stability_scores = torch.stack(stabs, dim=-1)  # [K, 3]
+        if return_probs:
+            return mask_1, mask_2, mask_3, pred_iou, stability_scores, (p1, p2, p3)
+        return mask_1, mask_2, mask_3, pred_iou, stability_scores
+
+    if return_probs:
+        return mask_1, mask_2, mask_3, pred_iou, (p1, p2, p3)
     return mask_1, mask_2, mask_3, pred_iou  # pred_iou stays on cuda, [K, 3]
 
 
 def nms_iou_matrix_gpu(mask_sorted):
     """
     Vectorized replacement for the pairwise cal_iou() loop used in NMS.
-    mask_sorted: list of [N] numpy bool arrays (length P)
+    mask_sorted: list of [N] numpy bool arrays (length P), list of CUDA tensors, or [P, N] CUDA tensor
     Returns a [P, P] numpy float32 IoU matrix, computed in one shot on GPU
     via a boolean matmul: intersection = M @ M.T, union = row_sum broadcast - intersection.
 
-    IMPORTANT: this must run outside any autocast (bf16/fp16) context. The caller's
-    mesh_sam() wraps the whole pipeline in torch.autocast for the network inference
-    speedup; if that context is still active here, PyTorch silently downcasts this
-    matmul to bf16 regardless of this function's own dtypes. Summing 100,000-element
-    boolean dot products in bf16 is imprecise enough to push some mask-overlap scores
-    across the 0.9 merge threshold incorrectly, which was observed to cause real
-    over-merging (e.g. a 3-part result collapsing to 1 part) on dense meshes. NMS/IoU
-    is set-overlap bookkeeping, not a place where lower precision should ever apply --
-    only the network's own forward pass should be affected by the precision setting.
+    IMPORTANT: this must run outside any autocast (bf16/fp16) context to ensure strict FP32 precision.
     """
     with torch.autocast("cuda", enabled=False):
-        M = np.stack(mask_sorted, axis=0).astype(np.float32)  # [P, N]
-        M_t = torch.from_numpy(M).cuda().float()
-        inter = M_t @ M_t.T  # [P, P]
-        row_sum = M_t.sum(dim=1)  # [P]
+        if isinstance(mask_sorted, torch.Tensor):
+            M_t = mask_sorted.float()
+        elif isinstance(mask_sorted, (list, tuple)) and len(mask_sorted) > 0 and isinstance(mask_sorted[0], torch.Tensor):
+            M_t = torch.stack(mask_sorted, dim=0).float()
+        else:
+            M = np.stack(mask_sorted, axis=0).astype(np.float32)  # [P, N]
+            M_t = torch.from_numpy(M).cuda().float()
+        inter = M_t @ M_t.T  # [P, P] FP32
+        row_sum = M_t.sum(dim=1)  # [P] FP32
         union = row_sum.unsqueeze(0) + row_sum.unsqueeze(1) - inter
         iou = torch.where(union > 0, inter / union, torch.zeros_like(union))
         return iou.detach().cpu().numpy()
@@ -975,13 +995,36 @@ def mesh_sam(
     loop_mode="opt3",   # one of: baseline, opt2, opt3
     nms_mode="fast",    # one of: baseline, fast
     cleanup_mode="fast",  # one of: baseline, fast
+    multimask_output=False,
+    nms_thresh=0.9,
+    min_mask_iou=0.0,
+    min_mask_points=10,
+    stability_filter=False,
+    stability_thresh=0.85,
+    stability_offset=0.05,
+    refine_mode="scipy",  # one of: scipy, graphcut, graphcut_knn
+    gc_smoothness=1.0,
+    gc_sigma=0.35,
+    gc_knn_k=6,
+    gc_n_iter=5,
+    preserve_raw_faces=True,
+    second_pass_enabled=False,
+    max_additional_prompts=100,
+    conf_threshold=0.60,
+    curvature_threshold=0.25,
+    min_region_size=15,
+    max_second_pass_iterations=1,
 ):
+    if save_path:
+        os.makedirs(save_path, exist_ok=True)
     GCR = get_connected_region_fast if cleanup_mode == "fast" else get_connected_region
     FXL = fix_label_fast if cleanup_mode == "fast" else fix_label
 
     with Timer("加载mesh"):
         model, model_parallel = model
+        raw_mesh = None
         if clean_mesh_flag:
+            raw_mesh = mesh.copy()
             mesh = clean_mesh(mesh)
             mesh = trimesh.Trimesh(vertices=mesh.vertices, faces=mesh.faces)
     if show_info:
@@ -1005,6 +1048,8 @@ def mesh_sam(
 
     with Timer("获取特征"):
         _feats = get_feat(model, _points, normals)
+        mesh.metadata["point_feats"] = _feats.float()
+        mesh.metadata["face_idx"] = face_idx
     if show_info:
         print("预处理特征")
 
@@ -1026,6 +1071,9 @@ def mesh_sam(
     with Timer("FPS采样提示点"):
         fps_idx = fpsample.fps_sampling(_points, prompt_num)
         _point_prompts = _points[fps_idx]
+        mesh.metadata["first_pass_prompts"] = _point_prompts
+        mesh.metadata["first_pass_prompt_indices"] = fps_idx
+        mesh.metadata["sampled_points"] = _points
     if save_mid_res:
         trimesh.points.PointCloud(_point_prompts, colors=_colors_pca[fps_idx]).export(
             os.path.join(save_path, "point_prompts_pca.glb")
@@ -1052,14 +1100,27 @@ def mesh_sam(
                 pred_mask = np.stack(
                     [pred_mask_1, pred_mask_2, pred_mask_3], axis=-1
                 )  # [N, K, 3]
-                max_idx = np.argmax(pred_iou, axis=-1)  # [K]
-                for j in range(max_idx.shape[0]):
-                    mask_res.append(pred_mask[:, j, max_idx[j]])
-                    iou_res.append(pred_iou[j, max_idx[j]])
-            mask_res = np.stack(mask_res, axis=-1)  # [N, K]
+                if multimask_output:
+                    K = pred_iou.shape[0]
+                    for j in range(K):
+                        for m in range(3):
+                            cand_m = pred_mask[:, j, m]
+                            cand_iou = float(pred_iou[j, m])
+                            if cand_iou < min_mask_iou or np.sum(cand_m) < min_mask_points:
+                                continue
+                            mask_res.append(cand_m)
+                            iou_res.append(cand_iou)
+                else:
+                    max_idx = np.argmax(pred_iou, axis=-1)  # [K]
+                    for j in range(max_idx.shape[0]):
+                        mask_res.append(pred_mask[:, j, max_idx[j]])
+                        iou_res.append(pred_iou[j, max_idx[j]])
+            if len(mask_res) > 0:
+                mask_res = np.stack(mask_res, axis=0)  # [P_total, N]
+            else:
+                mask_res = np.zeros((1, point_num), dtype=bool)
+                iou_res = [0.0]
         elif loop_mode == "opt2":
-            # upload points once + use expand() instead of repeat(), but still
-            # transfer each batch's mask to CPU immediately (isolates the upload/expand win)
             points_gpu = torch.from_numpy(_points).float().cuda()
             mask_res = []
             iou_res = []
@@ -1067,74 +1128,289 @@ def mesh_sam(
                 cur_propmt = _point_prompts[bs * i : bs * (i + 1)]
                 if cur_propmt.shape[0] == 0:
                     continue
-                m1, m2, m3, pred_iou = get_mask_fast(model_parallel, _feats, points_gpu, cur_propmt)
+                if stability_filter:
+                    m1, m2, m3, pred_iou, stabs = get_mask_fast(
+                        model_parallel, _feats, points_gpu, cur_propmt,
+                        calc_stability=True, stability_offset=stability_offset
+                    )
+                    stabs_np = stabs.detach().cpu().numpy()
+                else:
+                    m1, m2, m3, pred_iou = get_mask_fast(
+                        model_parallel, _feats, points_gpu, cur_propmt,
+                        calc_stability=False
+                    )
+                    stabs_np = None
                 pred_mask = torch.stack([m1, m2, m3], dim=-1)  # [N, K, 3] bool cuda
                 pred_iou_np = pred_iou.detach().cpu().numpy()
                 pred_mask_np = pred_mask.detach().cpu().numpy()
-                max_idx = np.argmax(pred_iou_np, axis=-1)  # [K]
-                for j in range(max_idx.shape[0]):
-                    mask_res.append(pred_mask_np[:, j, max_idx[j]])
-                    iou_res.append(pred_iou_np[j, max_idx[j]])
-            mask_res = np.stack(mask_res, axis=-1)  # [N, K]
+                K = pred_iou_np.shape[0]
+                if multimask_output:
+                    for j in range(K):
+                        for m in range(3):
+                            cand_m = pred_mask_np[:, j, m]
+                            cand_iou = float(pred_iou_np[j, m])
+                            if cand_iou < min_mask_iou or np.sum(cand_m) < min_mask_points:
+                                continue
+                            if stability_filter and stabs_np is not None and stabs_np[j, m] < stability_thresh:
+                                continue
+                            mask_res.append(cand_m)
+                            iou_res.append(cand_iou)
+                else:
+                    max_idx = np.argmax(pred_iou_np, axis=-1)  # [K]
+                    for j in range(max_idx.shape[0]):
+                        mask_res.append(pred_mask_np[:, j, max_idx[j]])
+                        iou_res.append(pred_iou_np[j, max_idx[j]])
+            if len(mask_res) > 0:
+                mask_res = np.stack(mask_res, axis=0)  # [P_total, N]
+            else:
+                mask_res = np.zeros((1, point_num), dtype=bool)
+                iou_res = [0.0]
         else:  # opt3: upload once, expand, AND keep everything on GPU until one final transfer
+            need_probs = (refine_mode in ["graphcut", "graphcut_knn"])
             points_gpu = torch.from_numpy(_points).float().cuda()
             mask_gpu_list = []
             iou_gpu_list = []
+            prob_gpu_list = [] if need_probs else None
             for i in tqdm(range(step_num), disable=not show_info):
                 cur_propmt = _point_prompts[bs * i : bs * (i + 1)]
                 if cur_propmt.shape[0] == 0:
                     continue
-                m1, m2, m3, pred_iou = get_mask_fast(model_parallel, _feats, points_gpu, cur_propmt)
-                pred_mask = torch.stack([m1, m2, m3], dim=-1)  # [N, K, 3] bool cuda
-                max_idx = torch.argmax(pred_iou, dim=-1)  # [K] cuda
-                K = max_idx.shape[0]
-                ar = torch.arange(K, device=pred_mask.device)
-                selected = pred_mask[:, ar, max_idx]  # [N, K] bool cuda
-                selected_iou = pred_iou[ar, max_idx]  # [K] cuda
-                mask_gpu_list.append(selected)
-                iou_gpu_list.append(selected_iou)
-            mask_res_gpu = torch.cat(mask_gpu_list, dim=1)  # [N, prompt_num] bool cuda
-            iou_res_gpu = torch.cat(iou_gpu_list, dim=0)  # [prompt_num] cuda
-            mask_res = mask_res_gpu.cpu().numpy()  # single transfer at the very end
-            iou_res = iou_res_gpu.cpu().numpy().tolist()
+                if multimask_output:
+                    if stability_filter:
+                        m1, m2, m3, pred_iou, stab_scores, (p1, p2, p3) = get_mask_fast(
+                            model_parallel, _feats, points_gpu, cur_propmt,
+                            calc_stability=True, stability_offset=stability_offset, return_probs=True
+                        )
+                    else:
+                        m1, m2, m3, pred_iou, (p1, p2, p3) = get_mask_fast(
+                            model_parallel, _feats, points_gpu, cur_propmt,
+                            calc_stability=False, return_probs=True
+                        )
+                    
+                    # Stack all 3 masks: [N, K, 3] -> permute to [3*K, N]
+                    cand_masks = torch.stack([m1, m2, m3], dim=-1)  # [N, K, 3] bool cuda
+                    K_cur = cur_propmt.shape[0]
+                    cand_masks = cand_masks.permute(1, 2, 0).reshape(K_cur * 3, point_num)  # [3K, N] bool cuda
+                    cand_ious = pred_iou.reshape(K_cur * 3)  # [3K] float cuda
+                    if need_probs:
+                        cand_probs = torch.stack([p1, p2, p3], dim=-1).permute(1, 2, 0).reshape(K_cur * 3, point_num)
+                    
+                    # Quality filtering
+                    valid = torch.ones(K_cur * 3, dtype=torch.bool, device=cand_masks.device)
+                    if min_mask_iou > 0.0:
+                        valid = valid & (cand_ious >= min_mask_iou)
+                    if min_mask_points > 0:
+                        cand_sizes = cand_masks.sum(dim=1)
+                        valid = valid & (cand_sizes >= min_mask_points)
+                    if stability_filter:
+                        cand_stabs = stab_scores.reshape(K_cur * 3)
+                        valid = valid & (cand_stabs >= stability_thresh)
+                    
+                    if valid.any():
+                        mask_gpu_list.append(cand_masks[valid])
+                        iou_gpu_list.append(cand_ious[valid])
+                        if need_probs:
+                            prob_gpu_list.append(cand_probs[valid])
+                else:
+                    if need_probs:
+                        m1, m2, m3, pred_iou, (p1, p2, p3) = get_mask_fast(
+                            model_parallel, _feats, points_gpu, cur_propmt,
+                            calc_stability=False, return_probs=True
+                        )
+                    else:
+                        m1, m2, m3, pred_iou = get_mask_fast(
+                            model_parallel, _feats, points_gpu, cur_propmt,
+                            calc_stability=False, return_probs=False
+                        )
+                    pred_mask = torch.stack([m1, m2, m3], dim=-1)  # [N, K, 3] bool cuda
+                    max_idx = torch.argmax(pred_iou, dim=-1)  # [K] cuda
+                    K_cur = max_idx.shape[0]
+                    ar = torch.arange(K_cur, device=pred_mask.device)
+                    selected = pred_mask[:, ar, max_idx]  # [N, K] bool cuda
+                    selected_iou = pred_iou[ar, max_idx]  # [K] cuda
+                    if need_probs:
+                        p_stack = torch.stack([p1, p2, p3], dim=-1)
+                        selected_prob = p_stack[:, ar, max_idx]  # [N, K] float cuda
+                    
+                    valid = torch.ones(K_cur, dtype=torch.bool, device=selected.device)
+                    if min_mask_iou > 0.0:
+                        valid = valid & (selected_iou >= min_mask_iou)
+                    if min_mask_points > 0:
+                        cand_sizes = selected.sum(dim=0)
+                        valid = valid & (cand_sizes >= min_mask_points)
+                    
+                    if valid.any():
+                        mask_gpu_list.append(selected[:, valid].transpose(0, 1))  # [K_valid, N]
+                        iou_gpu_list.append(selected_iou[valid])
+                        if need_probs:
+                            prob_gpu_list.append(selected_prob[:, valid].transpose(0, 1))
+            
+            if len(mask_gpu_list) > 0:
+                all_masks_gpu = torch.cat(mask_gpu_list, dim=0)  # [P_cand, N] bool cuda
+                all_ious_gpu = torch.cat(iou_gpu_list, dim=0)    # [P_cand] float cuda
+                if need_probs and len(prob_gpu_list) > 0:
+                    all_probs_gpu = torch.cat(prob_gpu_list, dim=0)  # [P_cand, N] float cuda
+                else:
+                    all_probs_gpu = None
+            else:
+                all_masks_gpu = torch.zeros((1, point_num), dtype=torch.bool, device="cuda")
+                all_ious_gpu = torch.zeros(1, dtype=torch.float32, device="cuda")
+                all_probs_gpu = None
+            
+            mask_res = all_masks_gpu.cpu().numpy()  # [P_cand, N]
+            iou_res = all_ious_gpu.cpu().numpy().tolist()
+            prob_res = all_probs_gpu.cpu().numpy() if all_probs_gpu is not None else None
+
     if show_info:
-        print("prmopt 推理完成")
+        print(f"prompt 推理完成, 收集到有效候选mask: {len(iou_res)}")
+
+    # ==================== SECOND PASS PROMPTING ====================
+    if second_pass_enabled and max_additional_prompts > 0:
+        with Timer("Second-Pass 提示点生成与推理"):
+            from second_pass_prompting import (
+                identify_uncertain_regions,
+                sample_second_pass_prompts,
+                run_second_pass_inference,
+                merge_candidate_pools,
+            )
+            
+            cand_masks_np = all_masks_gpu.cpu().numpy()
+            cand_ious_np = all_ious_gpu.cpu().numpy()
+            cand_probs_np = all_probs_gpu.cpu().numpy() if all_probs_gpu is not None else None
+            
+            current_iter = 0
+            while current_iter < max_second_pass_iterations:
+                current_iter += 1
+                uncertain_mask, priority, diag = identify_uncertain_regions(
+                    points=_points,
+                    normals=normals,
+                    cand_masks_np=cand_masks_np,
+                    cand_ious_np=cand_ious_np,
+                    cand_probs_np=cand_probs_np,
+                    conf_threshold=conf_threshold,
+                    curvature_threshold=curvature_threshold,
+                    min_region_size=min_region_size,
+                )
+                
+                if show_info:
+                    print(f"Second-Pass [Iter {current_iter}]: 未标注点 {diag['n_unlabeled']}, 低置信度点 {diag['n_low_conf']}, 高曲率点 {diag['n_high_curv']}, 过滤后有效不确定点 {diag['n_filtered_uncertain']} (分属 {diag['n_clusters']} 个连通簇)")
+                    
+                if diag['n_filtered_uncertain'] == 0:
+                    if show_info:
+                        print("未发现有效不确定区域，跳过第二阶段提示")
+                    break
+                    
+                prompts_per_iter = max(1, max_additional_prompts // max_second_pass_iterations)
+                pass2_prompts, pass2_pt_indices = sample_second_pass_prompts(
+                    points=_points,
+                    uncertain_mask=uncertain_mask,
+                    uncertain_priority=priority,
+                    max_additional_prompts=prompts_per_iter,
+                    seed=seed + current_iter,
+                )
+                
+                if show_info:
+                    print(f"Second-Pass [Iter {current_iter}]: 成功采样 {len(pass2_prompts)} 个新提示点 (FPS聚类)")
+                    
+                if len(pass2_prompts) == 0:
+                    break
+                    
+                if "second_pass_prompts" not in mesh.metadata:
+                    mesh.metadata["second_pass_prompts"] = []
+                    mesh.metadata["second_pass_prompt_indices"] = []
+                    mesh.metadata["uncertain_mask"] = uncertain_mask
+                mesh.metadata["second_pass_prompts"].append(pass2_prompts)
+                mesh.metadata["second_pass_prompt_indices"].append(pass2_pt_indices)
+                
+                # Run inference strictly on new prompts reusing _feats
+                t_p2_0 = time.time()
+                p2_masks, p2_ious, p2_probs = run_second_pass_inference(
+                    model_parallel=model_parallel,
+                    feats_gpu=_feats,
+                    points_gpu=points_gpu,
+                    second_pass_prompts=pass2_prompts,
+                    prompt_bs=prompt_bs,
+                    multimask_output=multimask_output,
+                    min_mask_iou=min_mask_iou,
+                    min_mask_points=min_mask_points,
+                    stability_filter=stability_filter,
+                    stability_thresh=stability_thresh,
+                    stability_offset=stability_offset,
+                    return_probs=need_probs,
+                    get_mask_fn=get_mask_fast,
+                    show_info=show_info,
+                )
+                t_p2_1 = time.time()
+                
+                if show_info:
+                    print(f"Second-Pass [Iter {current_iter}]: 推理耗时 {t_p2_1 - t_p2_0:.3f}s, 产生有效新候选mask {len(p2_ious)} 个")
+                    
+                all_masks_gpu, all_ious_gpu, all_probs_gpu = merge_candidate_pools(
+                    pass1_masks=all_masks_gpu,
+                    pass1_ious=all_ious_gpu,
+                    pass1_probs=all_probs_gpu,
+                    pass2_masks=p2_masks,
+                    pass2_ious=p2_ious,
+                    pass2_probs=p2_probs,
+                )
+                
+                cand_masks_np = all_masks_gpu.cpu().numpy()
+                cand_ious_np = all_ious_gpu.cpu().numpy()
+                cand_probs_np = all_probs_gpu.cpu().numpy() if all_probs_gpu is not None else None
+                
+            mask_res = all_masks_gpu.cpu().numpy()
+            iou_res = all_ious_gpu.cpu().numpy().tolist()
+            prob_res = all_probs_gpu.cpu().numpy() if all_probs_gpu is not None else None
+            
+            if show_info:
+                print(f"Second-Pass 扩充完成，候选mask总数: {len(iou_res)}")
+    # ==================== END SECOND PASS PROMPTING ====================
 
     with Timer("根据IOU排序"):
         iou_res = np.array(iou_res).tolist()
-        mask_iou = [[mask_res[:, i], iou_res[i]] for i in range(prompt_num)]
-        mask_iou_sorted = sorted(mask_iou, key=lambda x: x[1], reverse=True)
-        mask_sorted = [mask_iou_sorted[i][0] for i in range(prompt_num)]
-        iou_sorted = [mask_iou_sorted[i][1] for i in range(prompt_num)]
+        P_total = len(iou_res)
+        if prob_res is not None:
+            mask_iou = [[mask_res[i], iou_res[i], prob_res[i]] for i in range(P_total)]
+            mask_iou_sorted = sorted(mask_iou, key=lambda x: x[1], reverse=True)
+            mask_sorted = [mask_iou_sorted[i][0] for i in range(P_total)]
+            iou_sorted = [mask_iou_sorted[i][1] for i in range(P_total)]
+            prob_sorted = [mask_iou_sorted[i][2] for i in range(P_total)]
+        else:
+            mask_iou = [[mask_res[i], iou_res[i]] for i in range(P_total)]
+            mask_iou_sorted = sorted(mask_iou, key=lambda x: x[1], reverse=True)
+            mask_sorted = [mask_iou_sorted[i][0] for i in range(P_total)]
+            iou_sorted = [mask_iou_sorted[i][1] for i in range(P_total)]
+            prob_sorted = None
 
     with Timer("NMS"):
         clusters = defaultdict(list)
         if nms_mode == "fast":
-            iou_matrix = nms_iou_matrix_gpu(mask_sorted)  # [P, P] precomputed once on GPU
-            for i in tqdm(range(prompt_num), desc="NMS", disable=not show_info):
+            iou_matrix = nms_iou_matrix_gpu(mask_sorted)  # [P_total, P_total] precomputed in FP32 on GPU
+            for i in tqdm(range(P_total), desc="NMS", disable=not show_info):
                 for j in clusters.keys():
-                    if iou_matrix[i, j] > 0.9:
+                    if iou_matrix[i, j] > nms_thresh:
                         clusters[j].append(i)
                         break
                 else:
                     clusters[i].append(i)
         else:
             with ThreadPoolExecutor(max_workers=20) as executor:
-                for i in tqdm(range(prompt_num), desc="NMS", disable=not show_info):
+                for i in tqdm(range(P_total), desc="NMS", disable=not show_info):
                     _mask = mask_sorted[i]
                     futures = []
                     for j in clusters.keys():
                         futures.append(executor.submit(cal_iou, _mask, mask_sorted[j]))
 
                     for j, future in zip(clusters.keys(), futures):
-                        if future.result() > 0.9:
+                        if future.result() > nms_thresh:
                             clusters[j].append(i)
                             break
                     else:
                         clusters[i].append(i)
 
     if show_info:
-        print(f"NMS完成，mask数量：{len(clusters)}")
+        dups_removed = P_total - len(clusters)
+        print(f"NMS完成 (阈值={nms_thresh})，候选mask数量：{P_total}，去重后cluster数量：{len(clusters)}，消除冗余mask：{dups_removed}")
 
     if save_mid_res:
         part_mask_save_path = os.path.join(save_path, "part_mask")
@@ -1168,6 +1444,13 @@ def mesh_sam(
                 filtered_clusters.append(i)
             else:
                 other_clusters.append(i)
+        if len(filtered_clusters) == 0:
+            filtered_clusters = list(clusters.keys())
+        # Filter out whole-object masks that encompass >80% of points when subparts exist
+        if len(filtered_clusters) > 1:
+            part_clusters = [i for i in filtered_clusters if np.sum(mask_sorted[i]) < 0.80 * point_num]
+            if len(part_clusters) > 0:
+                filtered_clusters = part_clusters
     if show_info:
         print(
             f"过滤前：{len(clusters)} 个cluster，"
@@ -1217,7 +1500,7 @@ def mesh_sam(
                 continue
             part_mask = mask_sorted[i]
             _iou = cal_single_iou(part_mask, no_mask)
-            if _iou > 0.7:
+            if _iou > 0.7 and (len(cluster2) == 0 or np.sum(part_mask) < 0.80 * point_num):
                 cluster2[i] = [i]
                 no_mask[part_mask] = 0
                 if save_mid_res:
@@ -1311,12 +1594,48 @@ def mesh_sam(
         print("生成face_ids完成")
 
 
-    with Timer("第一次修复face_ids"):
-        face_ids += 1
-        face_ids = FXL(face_ids, adjacent_faces, mesh=mesh, show_info=show_info)
-        face_ids -= 1
-    if show_info:
-        print("修复face_ids完成")
+    if refine_mode == "scipy":
+        with Timer("第一次修复face_ids"):
+            face_ids += 1
+            face_ids = FXL(face_ids, adjacent_faces, mesh=mesh, show_info=show_info)
+            face_ids -= 1
+        if show_info:
+            print("修复face_ids完成 (SciPy fallback)")
+    elif refine_mode in ["graphcut", "graphcut_knn"]:
+        with Timer(f"Graph Cut 边界优化 ({refine_mode})"):
+            from graph_cut_refinement import refine_mesh_segmentation
+            # Initial flood fill to provide priors for unsampled faces
+            initial_fill = face_ids.copy() + 1
+            initial_fill = FXL(initial_fill, adjacent_faces, mesh=mesh, show_info=False) - 1
+            
+            # Map point probabilities to matrix [N, L]
+            L = len(final_mask_sorted)
+            if prob_sorted is not None:
+                point_probs_matrix = np.stack([np.maximum.reduce([prob_sorted[m] for m in cluster2[c]]) for c in final_mask_sorted], axis=1)
+            else:
+                point_probs_matrix = np.zeros((point_num, L), dtype=np.float32)
+                for l_idx, c in enumerate(final_mask_sorted):
+                    m_union = np.logical_or.reduce([mask_sorted[m] for m in cluster2[c]])
+                    point_probs_matrix[m_union, l_idx] = 0.95
+                point_probs_matrix[point_probs_matrix == 0] = 0.05
+            
+            refined_ids, gc_diag = refine_mesh_segmentation(
+                mesh=mesh,
+                face_idx=face_idx,
+                point_probs=point_probs_matrix,
+                initial_face_ids=initial_fill,
+                unique_labels=np.array(final_mask_sorted),
+                refine_mode=refine_mode,
+                smoothness_weight=gc_smoothness,
+                sigma=gc_sigma,
+                knn_k=gc_knn_k,
+                n_iter=gc_n_iter,
+            )
+            face_ids = refined_ids
+            if show_info:
+                print(f"Graph Cut优化完成: 耗时 {gc_diag['total_refine_time_s']:.3f}s (求解器 {gc_diag['solver_time_s']:.3f}s), 调整面片 {gc_diag['changed_faces']} ({gc_diag['changed_percent']:.2f}%)")
+    else:
+        raise ValueError(f"Unknown refine_mode: {refine_mode}")
 
     color_map[-1] = np.array([255, 0, 0], dtype=np.uint8)
 
@@ -1506,6 +1825,15 @@ def mesh_sam(
         )
     with Timer("计算最后的aabb"):
         aabb = get_aabb_from_face_ids(mesh, final_face_ids)
+    
+    if preserve_raw_faces and raw_mesh is not None and len(raw_mesh.faces) != len(mesh.faces):
+        from scipy.spatial import cKDTree
+        clean_tree = cKDTree(mesh.triangles.mean(axis=1))
+        _, raw_to_clean = clean_tree.query(raw_mesh.triangles.mean(axis=1), k=1)
+        raw_face_ids = final_face_ids[raw_to_clean]
+        mesh.metadata["raw_face_ids"] = raw_face_ids
+        mesh.metadata["raw_faces_count"] = len(raw_mesh.faces)
+    
     return aabb, final_face_ids, mesh
 
 
@@ -1539,6 +1867,10 @@ class AutoMask:
     def predict_aabb(
         self, mesh, point_num=None, prompt_num=None, threshold=None, post_process=None, save_path=None, save_mid_res=False, show_info=True, clean_mesh_flag=True, seed=42, is_parallel=True, prompt_bs=32,
         loop_mode="opt3", nms_mode="fast", cleanup_mode="fast",
+        multimask_output=False, nms_thresh=0.9, min_mask_iou=0.0, min_mask_points=10,
+        stability_filter=False, stability_thresh=0.85, stability_offset=0.05,
+        refine_mode="scipy", gc_smoothness=1.0, gc_sigma=0.35, gc_knn_k=6, gc_n_iter=5, preserve_raw_faces=True,
+        second_pass_enabled=False, max_additional_prompts=100, conf_threshold=0.60, curvature_threshold=0.25, min_region_size=15, max_second_pass_iterations=1,
     ):
         """
         Parameters:
@@ -1571,6 +1903,25 @@ class AutoMask:
             loop_mode=loop_mode,
             nms_mode=nms_mode,
             cleanup_mode=cleanup_mode,
+            multimask_output=multimask_output,
+            nms_thresh=nms_thresh,
+            min_mask_iou=min_mask_iou,
+            min_mask_points=min_mask_points,
+            stability_filter=stability_filter,
+            stability_thresh=stability_thresh,
+            stability_offset=stability_offset,
+            refine_mode=refine_mode,
+            gc_smoothness=gc_smoothness,
+            gc_sigma=gc_sigma,
+            gc_knn_k=gc_knn_k,
+            gc_n_iter=gc_n_iter,
+            preserve_raw_faces=preserve_raw_faces,
+            second_pass_enabled=second_pass_enabled,
+            max_additional_prompts=max_additional_prompts,
+            conf_threshold=conf_threshold,
+            curvature_threshold=curvature_threshold,
+            min_region_size=min_region_size,
+            max_second_pass_iterations=max_second_pass_iterations,
         )
 
 def set_seed(seed):
@@ -1606,6 +1957,25 @@ if __name__ == '__main__':
     argparser.add_argument('--save_face_ids', type=str, default=None, help='保存face_ids到指定npy路径,用于正确性比对')
     argparser.add_argument('--bf16', type=int, default=1, help='是否使用bf16加速推理')
     argparser.add_argument('--save_only_glbs', type=int, default=0, help='是否只保存最终结果glb文件并忽略中间产物')
+    argparser.add_argument('--multimask_output', type=int, default=0, help='是否保留全部3个mask (1为保留全部3个, 0为只保留argmax iou)')
+    argparser.add_argument('--nms_thresh', type=float, default=0.9, help='NMS IoU重叠阈值')
+    argparser.add_argument('--min_mask_iou', type=float, default=0.0, help='最低候选mask预测IoU阈值')
+    argparser.add_argument('--min_mask_points', type=int, default=10, help='最低候选mask点数')
+    argparser.add_argument('--stability_filter', type=int, default=0, help='是否启用SAM mask稳定性评分过滤')
+    argparser.add_argument('--stability_thresh', type=float, default=0.85, help='稳定性评分过滤阈值')
+    argparser.add_argument('--stability_offset', type=float, default=0.05, help='稳定性评分偏移量delta')
+    argparser.add_argument('--refine_mode', type=str, default='scipy', choices=['scipy', 'graphcut', 'graphcut_knn'], help='边界优化模式: scipy (默认保留的连通域+泛洪填充), graphcut (网格拓扑+二面角边长图割), graphcut_knn (空间kNN中心点图割)')
+    argparser.add_argument('--gc_smoothness', type=float, default=1.0, help='Graph Cut 平滑项权重')
+    argparser.add_argument('--gc_sigma', type=float, default=0.35, help='Graph Cut 二面角敏感度 (弧度)')
+    argparser.add_argument('--gc_knn_k', type=int, default=6, help='Graph Cut kNN图近邻数')
+    argparser.add_argument('--gc_n_iter', type=int, default=5, help='Graph Cut alpha-expansion 最大迭代次数')
+    argparser.add_argument('--preserve_raw_faces', type=int, default=1, help='是否保留原始未清洗mesh的面片ID映射')
+    argparser.add_argument('--second_pass_enabled', type=int, default=0, help='是否启用第二阶段针对性提示采样')
+    argparser.add_argument('--max_additional_prompts', type=int, default=100, help='第二阶段最大补充提示点数量')
+    argparser.add_argument('--conf_threshold', type=float, default=0.60, help='第二阶段不确定区域判定置信度阈值')
+    argparser.add_argument('--curvature_threshold', type=float, default=0.25, help='第二阶段高曲率边缘判定阈值')
+    argparser.add_argument('--min_region_size', type=int, default=15, help='第二阶段有效不确定连通域最小点数(过滤孤立噪点)')
+    argparser.add_argument('--max_second_pass_iterations', type=int, default=1, help='第二阶段最大迭代轮数')
     args = argparser.parse_args()
     if args.save_only_glbs:
         args.save_mid_res = 0
@@ -1642,7 +2012,26 @@ if __name__ == '__main__':
                                                             prompt_bs=args.prompt_bs,
                                                             loop_mode=args.loop_mode,
                                                             nms_mode=args.nms_mode,
-                                                            cleanup_mode=args.cleanup_mode,)
+                                                            cleanup_mode=args.cleanup_mode,
+                                                            multimask_output=bool(args.multimask_output),
+                                                            nms_thresh=args.nms_thresh,
+                                                            min_mask_iou=args.min_mask_iou,
+                                                            min_mask_points=args.min_mask_points,
+                                                            stability_filter=bool(args.stability_filter),
+                                                            stability_thresh=args.stability_thresh,
+                                                            stability_offset=args.stability_offset,
+                                                            refine_mode=args.refine_mode,
+                                                            gc_smoothness=args.gc_smoothness,
+                                                            gc_sigma=args.gc_sigma,
+                                                            gc_knn_k=args.gc_knn_k,
+                                                            gc_n_iter=args.gc_n_iter,
+                                                            preserve_raw_faces=bool(args.preserve_raw_faces),
+                                                            second_pass_enabled=bool(args.second_pass_enabled),
+                                                            max_additional_prompts=args.max_additional_prompts,
+                                                            conf_threshold=args.conf_threshold,
+                                                            curvature_threshold=args.curvature_threshold,
+                                                            min_region_size=args.min_region_size,
+                                                            max_second_pass_iterations=args.max_second_pass_iterations,)
     else:     
         mesh = trimesh.load(mesh_path, force='mesh')
         set_seed(args.seed)
@@ -1661,7 +2050,26 @@ if __name__ == '__main__':
                                                         prompt_bs=args.prompt_bs,
                                                         loop_mode=args.loop_mode,
                                                         nms_mode=args.nms_mode,
-                                                        cleanup_mode=args.cleanup_mode,)
+                                                        cleanup_mode=args.cleanup_mode,
+                                                        multimask_output=bool(args.multimask_output),
+                                                        nms_thresh=args.nms_thresh,
+                                                        min_mask_iou=args.min_mask_iou,
+                                                        min_mask_points=args.min_mask_points,
+                                                        stability_filter=bool(args.stability_filter),
+                                                        stability_thresh=args.stability_thresh,
+                                                        stability_offset=args.stability_offset,
+                                                        refine_mode=args.refine_mode,
+                                                        gc_smoothness=args.gc_smoothness,
+                                                        gc_sigma=args.gc_sigma,
+                                                        gc_knn_k=args.gc_knn_k,
+                                                        gc_n_iter=args.gc_n_iter,
+                                                        preserve_raw_faces=bool(args.preserve_raw_faces),
+                                                        second_pass_enabled=bool(args.second_pass_enabled),
+                                                        max_additional_prompts=args.max_additional_prompts,
+                                                        conf_threshold=args.conf_threshold,
+                                                        curvature_threshold=args.curvature_threshold,
+                                                        min_region_size=args.min_region_size,
+                                                        max_second_pass_iterations=args.max_second_pass_iterations,)
         valid_parts = len(np.unique(face_ids[face_ids >= 0])) if np.any(face_ids >= 0) else len(np.unique(face_ids))
         print(f"Segmentation complete! Found {valid_parts} parts, aabb shape: {aabb.shape}")
         
@@ -1672,6 +2080,9 @@ if __name__ == '__main__':
         np.save(os.path.join(output_path, f"{mesh_stem}_face_ids.npy"), face_ids)
         np.save(os.path.join(output_path, "auto_mask_mesh_final_post_face_ids.npy"), face_ids)
         mesh.export(os.path.join(output_path, "p3sam_cleaned_mesh.glb"))
+        if "raw_face_ids" in mesh.metadata:
+            np.save(os.path.join(output_path, f"{mesh_stem}_raw_face_ids.npy"), mesh.metadata["raw_face_ids"])
+            np.save(os.path.join(output_path, "auto_mask_mesh_final_post_raw_face_ids.npy"), mesh.metadata["raw_face_ids"])
         
         if args.save_face_ids:
             np.save(args.save_face_ids, face_ids)
