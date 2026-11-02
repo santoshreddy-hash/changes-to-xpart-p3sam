@@ -61,7 +61,7 @@ def label_img(img, text):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--meshes", nargs="*")
-    ap.add_argument("--preset", default="balanced", choices=["balanced", "fast"])
+    ap.add_argument("--preset", default="balanced", choices=["balanced", "fast", "precise"])
     ap.add_argument("--out", default=os.path.join("outputs", "final_pipeline_suite"))
     ap.add_argument("--set", dest="overrides", action="append", default=[], metavar="SECTION.KEY=VALUE")
     args = ap.parse_args()
