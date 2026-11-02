@@ -27,7 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
                          description="Segment meshes and write parts GLB, labels and reports.")
     seg.add_argument("inputs", nargs="+", help=f"mesh files or folders ({', '.join(SUPPORTED_EXTENSIONS)})")
     seg.add_argument("-o", "--output", required=True, help="output folder (one sub-folder per input when batching)")
-    seg.add_argument("--preset", default="balanced", choices=["balanced", "fast", "precise"], help="balanced (default), fast, or precise (no extra splitting)")
+    seg.add_argument("--preset", default="precise", choices=["precise", "detailed", "fast"],
+                     help="precise (default): clean-up only; detailed: also split large parts; fast: shorter averaging")
     seg.add_argument("--config", help="JSON file with config overrides")
     seg.add_argument("--set", dest="overrides", action="append", default=[], metavar="SECTION.KEY=VALUE",
                      help="override one config value, e.g. polish.stay_cost=0.05 (repeatable)")

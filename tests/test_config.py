@@ -12,17 +12,23 @@ class ConfigTests(unittest.TestCase):
     def test_defaults_validate(self):
         SegmentConfig().validate()
 
+    def test_precise_is_the_default(self):
+        default = SegmentConfig()
+        self.assertEqual(default.to_dict(), SegmentConfig.preset("precise").to_dict())
+        self.assertFalse(default.reprompt.enabled)
+        self.assertFalse(default.features.enabled)
+        self.assertTrue(default.polish.enabled)
+        self.assertEqual(default.p3sam.feature_tta, 16)
+
     def test_presets(self):
-        balanced, fast = SegmentConfig.preset("balanced"), SegmentConfig.preset("fast")
-        self.assertTrue(balanced.features.enabled)
-        self.assertFalse(fast.features.enabled)
-        self.assertLess(fast.reprompt.rounds, balanced.reprompt.rounds)
-        precise = SegmentConfig.preset("precise")
-        self.assertFalse(precise.reprompt.enabled)
-        self.assertFalse(precise.features.enabled)
-        self.assertTrue(precise.polish.enabled)
-        with self.assertRaises(InvalidInputError):
-            SegmentConfig.preset("turbo")
+        detailed, fast = SegmentConfig.preset("detailed"), SegmentConfig.preset("fast")
+        self.assertTrue(detailed.reprompt.enabled)
+        self.assertTrue(detailed.features.enabled)
+        self.assertFalse(fast.reprompt.enabled)
+        self.assertLess(fast.p3sam.feature_tta, SegmentConfig().p3sam.feature_tta)
+        with self.assertRaises(InvalidInputError) as ctx:
+            SegmentConfig.preset("balanced")
+        self.assertIn("precise", str(ctx.exception))
 
     def test_override_sets_and_coerces_values(self):
         cfg = SegmentConfig().override(["polish.stay_cost=0.1", "reprompt.rounds=2", "export.preview=false"])

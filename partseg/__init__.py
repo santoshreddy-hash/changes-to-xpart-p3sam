@@ -1,7 +1,7 @@
 """partseg - clean, reproducible part segmentation of 3D meshes on top of P3-SAM.
 
     from partseg import segment_file, SegmentConfig
-    result = segment_file("chair.glb", "out/chair", SegmentConfig.preset("balanced"))
+    result = segment_file("chair.glb", "out/chair", SegmentConfig.preset("precise"))
 
 The heavy imports (torch, the P3-SAM runtime) happen lazily inside the functions.
 """

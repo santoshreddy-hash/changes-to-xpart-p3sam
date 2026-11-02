@@ -3372,7 +3372,7 @@ const PIPELINE_CONFIGS = {
     id: 'clean_parts',
     label: 'Clean Parts',
     timeEst: '~5-40s Total',
-    desc: 'Production segmentation: P3-SAM with validated sub-part splitting and crease-aware boundary clean-up. Smooth, noise-free part boundaries; preserves original PBR paint and textures.',
+    desc: 'Production segmentation: P3-SAM with crease-aware boundary clean-up. Smooth, noise-free part boundaries; preserves original PBR paint and textures.',
     params: { mode: 'clean_parts', steps: 50, resolution: 512, mc_algo: 'dmc', chunk_size: 16, preserve_materials: true },
     step2Label: 'Clean Parts Exact Partitioning:'
   },

@@ -28,7 +28,7 @@ class PipelineEndToEnd(unittest.TestCase):
         from partseg import SegmentConfig, load_model, segment_file
 
         cls.model = load_model()
-        cls.cfg = SegmentConfig.preset("balanced")
+        cls.cfg = SegmentConfig()  # the default (precise) preset
         cls.tmp = tempfile.TemporaryDirectory()
         cls.first = segment_file(MESH, Path(cls.tmp.name) / "a", cls.cfg, model=cls.model)
         cls.second = segment_file(MESH, Path(cls.tmp.name) / "b", cls.cfg, model=cls.model)

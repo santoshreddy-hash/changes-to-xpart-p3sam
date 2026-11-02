@@ -1,6 +1,6 @@
 """Benchmark: baseline P3-SAM vs enhanced P3-SAM vs the full partseg pipeline on the 8-mesh suite.
 
-    python benchmarks/run_suite.py [--meshes id ...] [--preset balanced|fast] [--out DIR]
+    python benchmarks/run_suite.py [--meshes id ...] [--preset precise|detailed|fast] [--out DIR]
 
 Writes per-mesh comparison renders, GLBs and final_summary.json (read by build_grid.py).
 """
@@ -61,7 +61,7 @@ def label_img(img, text):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--meshes", nargs="*")
-    ap.add_argument("--preset", default="balanced", choices=["balanced", "fast", "precise"])
+    ap.add_argument("--preset", default="precise", choices=["precise", "detailed", "fast"])
     ap.add_argument("--out", default=os.path.join("outputs", "final_pipeline_suite"))
     ap.add_argument("--set", dest="overrides", action="append", default=[], metavar="SECTION.KEY=VALUE")
     args = ap.parse_args()

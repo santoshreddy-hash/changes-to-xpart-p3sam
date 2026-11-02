@@ -33,7 +33,7 @@ class CliTests(unittest.TestCase):
 
     def test_parser_defaults(self):
         args = build_parser().parse_args(["segment", "a.glb", "-o", "out"])
-        self.assertEqual(args.preset, "balanced")
+        self.assertEqual(args.preset, "precise")
         self.assertFalse(args.no_preview)
         self.assertEqual(args.overrides, [])
 

@@ -1,7 +1,8 @@
 # partseg - clean part segmentation
 
-`partseg` turns a 3D mesh into clean, named parts. It runs P3-SAM, splits parts that P3-SAM left
-as one blob, and cleans every boundary so parts are single connected pieces with smooth edges.
+`partseg` turns a 3D mesh into clean, named parts. It runs P3-SAM and cleans every boundary so parts are
+single connected pieces with smooth edges. The default `precise` preset keeps P3-SAM's splits; the optional
+`detailed` preset also splits parts that P3-SAM left as one blob.
 
 ## Requirements
 
@@ -15,6 +16,7 @@ as one blob, and cleans every boundary so parts are single connected pieces with
 ```bash
 python -m partseg segment chair.glb -o out/chair
 python -m partseg segment models/ -o out            # a folder: one sub-folder per mesh, model loaded once
+python -m partseg segment chair.glb -o out --preset detailed   # also split large parts (see Presets)
 python -m partseg segment chair.glb -o out --preset fast
 python -m partseg segment chair.glb -o out --set polish.stay_cost=0.04 --keep-materials
 python -m partseg segment chair.glb -o out --parts 6     # merge neighbouring parts down to at most 6
@@ -30,7 +32,7 @@ Exit codes: `0` success, `1` some files in a batch failed, `2` bad input or conf
 from partseg import SegmentConfig, load_model, segment_file
 
 model = load_model()                                   # once per process
-cfg = SegmentConfig.preset("balanced")
+cfg = SegmentConfig()                                   # the default preset, "precise"
 result = segment_file("chair.glb", "out/chair", cfg, model=model)
 print(len(result.parts), result.stage_seconds["total"], result.warnings)
 ```
@@ -65,25 +67,39 @@ Both JSON files carry `schema_version`.
 
 1. **P3-SAM, multi-mask pass**: stability filtering, second-pass prompting, graph cut. Backbone features are
    averaged over 16 voxel-sampling seeds (`p3sam.feature_tta`), which cancels most of P3-SAM's seed noise.
-2. **Re-prompting**: inside large parts, a sub-part is accepted only when several independent prompts agree.
-3. **Feature splitting**: large organic parts are split along clusters of P3-SAM's own features, and each
-   split must be confirmed by the mask decoder prompted inside both children.
-4. **Boundary clean-up**: crack-tolerant component splitting, fragment merging, crease snapping, a
+2. **Boundary clean-up**: crack-tolerant component splitting, fragment merging, crease snapping, a
    crease-aware graph cut and label diffusion. Flat panels (a table top) are never split.
+3. *`detailed` only* **re-prompting**: inside large parts, a sub-part is accepted only when several independent
+   prompts agree.
+4. *`detailed` only* **feature splitting**: large organic parts are split along clusters of P3-SAM's own
+   features, and each split must be confirmed by the mask decoder prompted inside both children.
 
-Presets: `balanced` (default), `fast` (one re-prompt round, no feature splitting, 4-pass averaging) and
-`precise` (no re-prompting or feature splitting, clean-up only; see the ground-truth results below).
+## Presets
+
+| Preset | What it does | When to use it |
+|---|---|---|
+| `precise` (default) | steps 1 and 2 | clean, hard-surface or CAD-like assets; the only preset with a measured accuracy advantage |
+| `detailed` | steps 1 to 4 | organic characters or furniture where P3-SAM merges obvious parts (a table top with its body); review the result |
+| `fast` | `precise` with 4-pass feature averaging | shorter runs; matched `precise` on the ground-truth benchmark, but seed-to-seed stability is lower |
+
 Every tunable is in `partseg/config.py`; override with `--set section.key=value` or `--config file.json`.
 
 ## Measured behaviour (8-mesh benchmark, RTX 4090)
 
-Run `python benchmarks/run_suite.py` then `python benchmarks/build_grid.py`. Results land in
-`outputs/final_pipeline_suite/` (comparison images, `final_summary.json`, `FINAL_master_grid.png`).
+Run `python benchmarks/run_suite.py [--preset detailed]` then `python benchmarks/build_grid.py <folder>`.
+Results land in `outputs/final_pipeline_suite/` (comparison images, `final_summary.json`, `FINAL_master_grid.png`).
 
-- Parts over the 8 meshes: baseline P3-SAM 105, enhanced P3-SAM 144, final partseg 179.
-- Time per mesh: 3 to 33 s once the model is loaded, 18.5 s on average (the 854k-face sideboard takes about 31 s).
+| Preset | Parts over the 8 meshes | Average time per mesh |
+|---|---|---|
+| baseline P3-SAM | 105 | 3.7 s |
+| `precise` (default) | 137 | 10.4 s |
+| `detailed` | 179 | 18.5 s |
+
+- Time per mesh with `precise`: 2.7 to 30.8 s once the model is loaded (the 854k-face sideboard takes about 31 s).
 - Every final part is one connected piece, apart from a few specks under 0.01% of the surface that are
   merged into the nearest part.
+- On real meshes `detailed` finds splits `precise` misses (bedside table 12 parts vs 7, deer 16 vs 8, dining set
+  28 vs 19), but there is no ground truth for real meshes, so which is more correct is not measured.
 
 ## Ground-truth benchmark
 
@@ -95,14 +111,14 @@ real assets, so read the numbers as a regression and ablation signal, not as rea
 |---|---|---|---|---|
 | Baseline P3-SAM | 0.961 | 0.942 | 0.994 | 38 / 42 |
 | Enhanced P3-SAM | 0.988 | 0.968 | 0.956 | 39 / 42 |
-| `balanced` (default) | 0.755 | 0.707 | 0.457 | 25 / 42 |
-| `precise` | 0.986 | 0.965 | 0.966 | 39 / 42 |
+| `precise` (default) | 0.986 | 0.965 | 0.966 | 39 / 42 |
+| `fast` | 0.986 | 0.966 | 0.966 | 39 / 42 |
+| `detailed` | 0.755 | 0.707 | 0.457 | 25 / 42 |
 
-**What this means.** On clean geometry where P3-SAM is already right, the default's re-prompting and feature
+**What this means.** On clean geometry where P3-SAM is already right, the `detailed` re-prompting and feature
 splitting stages add false splits (a 3-part dumbbell becomes 16 parts, a 3-part lamp becomes 10). They were
 tuned by eye on 8 real meshes where P3-SAM under-splits (a deer, characters), where they do add real parts, but
-that gain has not been measured against ground truth. If your assets are clean, hard-surface or CAD-like,
-use `--preset precise`. The default favours more parts over precision.
+that gain has not been measured against ground truth. That is why `precise` is the default.
 
 `benchmarks/run_suite.py` remains the visual benchmark on the 8 real meshes.
 
@@ -114,7 +130,7 @@ so neither has been run. The CI job runs only the tests that need no GPU.
 ## Web app
 
 `python web_app/server.py --port 8080`. The **Clean Parts** pipeline in the dropdown runs this package as a
-subprocess and partitions the mesh by the resulting labels, keeping the original textures.
+subprocess (default `precise` preset) and partitions the mesh by the resulting labels, keeping the original textures.
 `GET /api/health` reports the GPU and active jobs. Each job starts a new process, so it pays about
 15 s of model loading; use the CLI or Python API for batches.
 
@@ -129,7 +145,8 @@ skipped when no GPU or sample mesh is present.
 
 ## Known limits
 
-- **The default can over-split clean geometry** (see the ground-truth table); use `--preset precise` there.
+- **The default (`precise`) can under-split.** It keeps P3-SAM's splits, so a table top merged with its body or a
+  deer's torso and neck stay merged. `--preset detailed` splits more but can add false splits (see the ground-truth table).
 - **Not bit-reproducible across separate runs.** Seeds are fixed and a run is repeatable inside one process,
   but GPU kernel selection can differ between processes, so a few boundaries may move or the part count may
   change by one or two. Treat the output as stable, not as byte-identical. Investigation so far: the backbone

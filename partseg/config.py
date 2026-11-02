@@ -44,9 +44,9 @@ class P3SamConfig:
 
 @dataclass
 class RepromptConfig:
-    """Re-prompt inside large parts and split them along multi-prompt consensus masks."""
+    """Re-prompt inside large parts and split them along multi-prompt consensus masks (off by default)."""
 
-    enabled: bool = True
+    enabled: bool = False
     rounds: int = 3
     big_frac: float = 0.08
     prompts: int = 64
@@ -67,9 +67,9 @@ class RepromptConfig:
 
 @dataclass
 class FeatureSplitConfig:
-    """Split large organic parts along P3-SAM feature clusters validated by the mask decoder."""
+    """Split large organic parts along P3-SAM feature clusters validated by the mask decoder (off by default)."""
 
-    enabled: bool = True
+    enabled: bool = False
     big_frac: float = 0.06
     planar_guard: float = 0.85
     tau: float = 1.3
@@ -122,21 +122,24 @@ class SegmentConfig:
 
     # ------------------------------------------------------------------ presets
     @classmethod
-    def preset(cls, name: str = "balanced") -> "SegmentConfig":
+    def preset(cls, name: str = "precise") -> "SegmentConfig":
+        """
+        precise   (default) P3-SAM plus boundary clean-up, no extra splitting. Best on the ground-truth benchmark.
+        detailed  adds consensus re-prompting and decoder-validated feature splitting: more parts on organic
+                  or merged-looking assets, at the cost of occasional false splits on clean geometry.
+        fast      precise with 4-pass instead of 16-pass feature averaging (shorter, somewhat less stable).
+        """
         cfg = cls()
-        if name == "balanced":
+        if name == "precise":
+            return cfg
+        if name == "detailed":
+            cfg.reprompt.enabled = True
+            cfg.features.enabled = True
             return cfg
         if name == "fast":
-            cfg.reprompt.rounds = 1
-            cfg.reprompt.starts = 1
-            cfg.features.enabled = False
             cfg.p3sam.feature_tta = 4
             return cfg
-        if name == "precise":  # no extra splitting: clean-up only, best on the ground-truth benchmark
-            cfg.reprompt.enabled = False
-            cfg.features.enabled = False
-            return cfg
-        raise InvalidInputError(f"Unknown preset '{name}'. Available presets: balanced, fast, precise")
+        raise InvalidInputError(f"Unknown preset '{name}'. Available presets: precise, detailed, fast")
 
     # ---------------------------------------------------------------- (de)serialize
     def to_dict(self) -> dict:
