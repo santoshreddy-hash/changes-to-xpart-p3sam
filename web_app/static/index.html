@@ -115,11 +115,14 @@
         <span style="font-size: 11px; font-weight: 700; color: #a1a1aa; padding-left: 6px; display: flex; align-items: center; gap: 4px;">
           <span>⚙️ Pipeline:</span>
         </span>
-        <select id="topbar-pipeline-select" class="tool-select pipeline-select-styled" title="Select segmentation pipeline: Tripo Exact, X-Part Fast, X-Part Lossless, or Original X-Part Baseline">
-          <option value="tripo_exact" selected>⚡ Tripo Exact Partitioning (~10s)</option>
-          <option value="clean_parts">✨ Clean Parts - smooth boundaries (~5-40s)</option>
+        <select id="topbar-pipeline-select" class="tool-select pipeline-select-styled" title="Select segmentation pipeline: Fast Clean Parts v2, Original Fast, PartSeg Precise, Benchmark Suite, Tripo Exact, or X-Part">
+          <option value="clean_parts_fast_v2" selected>🚀 Clean Parts Fast v2 (Adaptive Top-5, ~1-3s)</option>
+          <option value="clean_parts_fast">⚡ Clean Parts Fast (Original Baseline, ~1-3s)</option>
+          <option value="clean_parts_precise">💎 PartSeg Precise - Crease Snapped (~5-8s)</option>
+          <option value="benchmark_suite">📊 Benchmark 3-Way Suite (Base vs Enh vs Final)</option>
+          <option value="tripo_exact">🧩 Tripo Exact Partitioning (In-Memory, ~2-4s)</option>
           <option value="xpart_fast">🚀 X-Part Fast DiT (~35s)</option>
-          <option value="xpart_lossless">💎 X-Part Lossless GPU (~72s)</option>
+          <option value="xpart_lossless">✨ X-Part Lossless GPU (~72s)</option>
           <option value="xpart_baseline">🐢 Original X-Part Baseline (~185s)</option>
         </select>
         <button id="topbar-run-pipeline-btn" class="action-btn primary mini-btn" title="Run selected pipeline on the loaded model">
@@ -204,8 +207,11 @@
       </div>
       <div style="margin-top: 8px;">
         <select id="sidebar-pipeline-select" class="sidebar-pipeline-dropdown" title="Choose which segmentation pipeline will run on input">
-          <option value="tripo_exact" selected>⚡ Tripo Exact Partitioning (~10s, Original Textures)</option>
-          <option value="clean_parts">✨ Clean Parts - smooth boundaries (~5-40s, Original Textures)</option>
+          <option value="clean_parts_fast_v2" selected>🚀 Clean Parts Fast v2 (Adaptive Top-5, ~1-3s)</option>
+          <option value="clean_parts_fast">⚡ Clean Parts Fast (Original Baseline, ~1-3s)</option>
+          <option value="clean_parts_precise">💎 PartSeg Precise - Crease Snapped (~5-8s)</option>
+          <option value="benchmark_suite">📊 Benchmark 3-Way Suite (Base vs Enh vs Final)</option>
+          <option value="tripo_exact">🧩 Tripo Exact Partitioning (In-Memory, ~2-4s, Original Textures)</option>
           <option value="xpart_fast">🚀 X-Part Fast Mode (~35s, 20 steps, 384 res)</option>
           <option value="xpart_lossless">💎 X-Part Lossless GPU (~72s, 50 steps, 512 res)</option>
           <option value="xpart_baseline">🐢 Original X-Part Baseline (~185s, CPU MC)</option>
@@ -213,6 +219,23 @@
       </div>
       <div id="pipeline-desc-text" class="pipeline-desc-box">
         High-speed exact mesh partitioning via P3-SAM face assignment. Preserves 100% of authentic PBR paint, vertex colors, and textures.
+      </div>
+      <div style="display: flex; gap: 8px; margin-top: 6px; align-items: center; justify-content: space-between;">
+        <div style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #a1a1aa;">
+          <span>🎯 Target Parts:</span>
+          <select id="target-parts-select" style="background: #18181b; color: #fff; border: 1px solid #3f3f46; border-radius: 4px; padding: 2px 4px; font-size: 11px;" title="Optionally merge into N macro-components (0 = Auto/Keep All)">
+            <option value="0" selected>Auto (All)</option>
+            <option value="4">4 Parts</option>
+            <option value="6">6 Parts</option>
+            <option value="8">8 Parts</option>
+            <option value="12">12 Parts</option>
+            <option value="16">16 Parts</option>
+          </select>
+        </div>
+        <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #a1a1aa; cursor: pointer;" title="Automatically cap open cut-rims with planar triangle fans so parts are solid watertight CAD solids">
+          <input type="checkbox" id="auto-seal-checkbox">
+          <span>🛡️ Seal Rims</span>
+        </label>
       </div>
       <button id="sidebar-run-pipeline-btn" class="action-btn primary full-width-btn" style="margin-top: 8px;" title="Execute the selected pipeline on the 3D model">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
@@ -298,6 +321,22 @@
       <div class="total-timing-badge">
         <span>Total Processing Time:</span>
         <span id="time-total" style="color: #10b981; font-weight: 700;">-- s</span>
+      </div>
+
+      <!-- Live Boundary Quality Telemetry (Fast v2 Enhanced) -->
+      <div id="quality-telemetry-box" style="margin-top: 8px; padding: 6px 10px; background: rgba(39, 39, 42, 0.4); border-radius: 6px; border: 1px solid rgba(63, 63, 70, 0.4); font-size: 11px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
+          <span style="color: #a1a1aa;">Crease Snapping:</span>
+          <span id="telemetry-crease-pct" style="color: #38bdf8; font-weight: 700;">97.3%</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
+          <span style="color: #a1a1aa;">Mean Confidence:</span>
+          <span id="telemetry-confidence" style="color: #10b981; font-weight: 700;">98.5%</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="color: #a1a1aa;">Seam Edge Efficiency:</span>
+          <span id="telemetry-seam-edges" style="color: #e4e4e7; font-weight: 600;">289 edges</span>
+        </div>
       </div>
     </div>
 

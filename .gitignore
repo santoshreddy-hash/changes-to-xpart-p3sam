@@ -13,3 +13,5 @@ tripo_analysis/scripts/
 tripo_analysis/page.html
 tripo_project_detail.json
 rea/
+*.zip
+.claude/

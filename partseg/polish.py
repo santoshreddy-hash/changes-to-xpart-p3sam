@@ -226,6 +226,55 @@ def absorb_spiky_islands(face_ids, graph, max_area_frac=0.02, enclosure=0.8, min
     return renumber_by_area(ids, graph.areas)
 
 
+def absorb_satellite_fragments(face_ids, graph, max_area_frac=0.003, max_faces=400, dominance=8.0, max_rounds=3):
+    """
+    Remove small "teeth": edge-connected fragments of a label that sit away from that label's main body.
+
+    Crack-tolerant component splitting counts a tooth as part of its label when it lies within one triangle
+    of the main body, which hides it from fragment merging. Here connectivity is strict (shared mesh edges
+    only). A fragment is a tooth when a much larger edge-connected piece of the same label exists, it is small,
+    and it touches another label; it joins the neighbour it shares the longest boundary with. Parts made of
+    comparable pieces, and isolated shells with no shared edge, are never touched.
+    """
+    ids = face_ids.copy()
+    a, b = graph.adj[:, 0], graph.adj[:, 1]
+    for _ in range(max_rounds):
+        strict = label_components(ids, graph, close_cracks=False)
+        n_comp = int(strict.max()) + 1
+        comp_area = np.bincount(strict[strict >= 0], weights=graph.areas[strict >= 0], minlength=n_comp)
+        comp_faces = np.bincount(strict[strict >= 0], minlength=n_comp)
+        comp_label = np.full(n_comp, -1, dtype=np.int64)
+        comp_label[strict[strict >= 0]] = ids[strict >= 0]
+        biggest = {}
+        for c in range(n_comp):
+            lab = comp_label[c]
+            if lab >= 0 and comp_area[c] > biggest.get(lab, 0.0):
+                biggest[lab] = comp_area[c]
+        sa, sb = strict[a], strict[b]
+        cut = sa != sb
+        changed = False
+        for c in np.where((comp_area < max_area_frac * graph.total_area) & (comp_faces <= max_faces))[0]:
+            lab = comp_label[c]
+            if lab < 0 or biggest[lab] < dominance * comp_area[c]:
+                continue
+            sel = cut & ((sa == c) | (sb == c))
+            if not sel.any():
+                continue
+            other_comp = np.where(sa[sel] == c, sb[sel], sa[sel])
+            other_lab = comp_label[other_comp]
+            lens = graph.edge_len[sel]
+            keep = (other_lab >= 0) & (other_lab != lab)
+            if not keep.any():
+                continue
+            cand = np.unique(other_lab[keep])
+            best = cand[np.argmax([lens[keep][other_lab[keep] == x].sum() for x in cand])]
+            ids[strict == c] = best
+            changed = True
+        if not changed:
+            break
+    return ids
+
+
 def boundary_stats(face_ids, graph):
     a, b = graph.adj[:, 0], graph.adj[:, 1]
     diff = (face_ids[a] != face_ids[b]) & (face_ids[a] >= 0) & (face_ids[b] >= 0)
@@ -499,6 +548,7 @@ def polish_labels(face_ids, graph, cfg, log=None):
     ids = merge_small_regions(ids, graph, min_area_frac=cfg.min_area_frac, min_faces=min_faces,
                               speck_frac=cfg.speck_frac)
     ids = absorb_spiky_islands(ids, graph)
+    ids = absorb_satellite_fragments(ids, graph, max_area_frac=cfg.min_area_frac)
 
     # large flat panels (table tops, back boards) may gain faces in their interior never lose them;
     # their boundary band stays free so edges can still straighten
@@ -536,4 +586,5 @@ def polish_labels(face_ids, graph, cfg, log=None):
     ids = merge_small_regions(ids, graph, min_area_frac=cfg.min_area_frac, min_faces=min_faces,
                               speck_frac=cfg.speck_frac)
     ids = absorb_spiky_islands(ids, graph)
+    ids = absorb_satellite_fragments(ids, graph, max_area_frac=cfg.min_area_frac)
     return renumber_by_area(ids, graph.areas)
